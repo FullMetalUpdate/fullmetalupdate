@@ -2,6 +2,7 @@
 
 import aiohttp
 import aiohttp.web
+import async_timeout
 import json
 import hashlib
 import logging
@@ -163,7 +164,8 @@ class DDIClient(object):
                     **kwargs))
 
         self.logger.debug('GET {}'.format(url))
-        with aiohttp.Timeout(self.timeout):
+
+        with async_timeout.timeout(self.timeout, loop=self.session.loop):
             async with self.session.get(url, headers=get_headers,
                                         params=query_params) as resp:
                 await self.check_http_status(resp)
@@ -225,12 +227,12 @@ class DDIClient(object):
         hash_md5 = hashlib.md5()
 
         self.logger.debug('GET binary {}'.format(url))
-        with aiohttp.Timeout(timeout, loop=self.session.loop):
+        with async_timeout.timeout(timeout, loop=self.session.loop):
             async with self.session.get(url, headers=get_bin_headers) as resp:
                 await self.check_http_status(resp)
                 with open(dl_location, 'wb') as fd:
                     while True:
-                        with aiohttp.Timeout(60):
+                        with async_timeout.timeout(60):
                             chunk = await resp.content.read(chunk_size)
                             if not chunk:
                                 break
@@ -259,7 +261,7 @@ class DDIClient(object):
                     controllerId=self.controller_id,
                     **kwargs))
         self.logger.debug('POST {}'.format(url))
-        with aiohttp.Timeout(self.timeout):
+        with async_timeout.timeout(self.timeout):
             async with self.session.post(url, headers=post_headers,
                                          data=json.dumps(data)) as resp:
                 await self.check_http_status(resp)
@@ -285,7 +287,7 @@ class DDIClient(object):
                     **kwargs))
         self.logger.debug('PUT {}'.format(url))
         self.logger.debug(json.dumps(data))
-        with aiohttp.Timeout(self.timeout):
+        with async_timeout.timeout(self.timeout):
             async with self.session.put(url, headers=put_headers,
                                         data=json.dumps(data)) as resp:
                 await self.check_http_status(resp)
