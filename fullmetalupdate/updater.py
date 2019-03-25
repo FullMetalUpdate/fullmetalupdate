@@ -207,9 +207,9 @@ class AsyncUpdater(object):
             options.no_copy_fallback = True
             options.mode = OSTree.RepoCheckoutMode.USER
 
-            self.logger.info("Getting rev from repo:{}".format(container_name + ':' + container_name))
+            self.logger.info("Getting rev from repo:{}".format(container_name))
             if rev_number == None:
-                rev = self.repo_containers.resolve_rev(container_name + ':' + container_name, False)[1]
+                rev = self.repo_containers.resolve_rev(container_name, False)[1]
             else:
                 rev = rev_number
             self.logger.info("Rev value:{}".format(rev))
