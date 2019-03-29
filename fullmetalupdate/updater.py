@@ -18,6 +18,7 @@ VALIDATE_CHECKOUT = 'CheckoutDone'
 FILE_AUTOSTART = 'auto.start'
 CONTAINER_UID = 1000
 CONTAINER_GID = 1000
+OSTREE_DEPTH = 1
 
 class DBUSException(Exception):
     pass
@@ -59,8 +60,8 @@ class AsyncUpdater(object):
             [_,refs] = self.repo_containers.list_refs(None, None)
 
             self.logger.info("Initalize remotes for the containers ostree: {}".format(refs))
-            for refspec in refs:
-                remote_name = refspec
+            for ref in refs:
+                remote_name = ref.split(':')[0]          
                 if not remote_name in self.repo_containers.remote_list():
                     self.logger.info("We had the remote: {}".format(remote_name))
                     self.repo_containers.remote_add(remote_name,
@@ -79,8 +80,8 @@ class AsyncUpdater(object):
 
         try:
             [_,refs] = self.repo_containers.list_refs(None, None)
-            for refspec in refs:
-                container_name = refspec
+            for ref in refs:
+                container_name = ref.split(':')[1]
                 if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + VALIDATE_CHECKOUT):
                     res = self.checkout_container(container_name, None)
                 if not res:
@@ -125,7 +126,7 @@ class AsyncUpdater(object):
         If necessary, container is stopped. Files are checked out to the installation folder.
         And container is started again.
         """
-        # if a container is named 'container-hello-world-package', its service will be 'container-hello-world.service'
+        # if a container is named 'container-hello-world', its service will be 'container-hello-world.service'
         service_name = None
         for unit in self.systemd.ListUnits():
             # full unit : ('container-hello-world.service', 'container-hello-world-imx6qdlsabresd container service', 'loaded', 'failed', 'failed', '', '/org/freedesktop/systemd1/unit/wtk_2dnodejs_2ddemo_2eservice', 0, '', '/')
@@ -151,8 +152,10 @@ class AsyncUpdater(object):
             progress = OSTree.AsyncProgress.new()
             progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
 
-            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE), 'refs': GLib.Variant('as', (rev_number,))})
-            self.logger.error("Pulling {} from OSTree repo, refs ({})".format(container_name, rev_number))
+            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE), 
+                                          'refs': GLib.Variant('as', (container_name,)),
+                                          'depth': GLib.Variant('i', OSTREE_DEPTH)})
+            self.logger.info("Pulling remote {} from OSTree repo, branch ({})".format(container_name, container_name))
             res = self.repo_containers.pull_with_options(container_name, opts, progress, None)
             progress.finish()
         except GLib.Error as e:
@@ -207,9 +210,10 @@ class AsyncUpdater(object):
             options.no_copy_fallback = True
             options.mode = OSTree.RepoCheckoutMode.USER
 
-            self.logger.info("Getting rev from repo:{}".format(container_name))
+            self.logger.info("Getting rev from repo:{}".format(container_name + ':' + container_name))
+
             if rev_number == None:
-                rev = self.repo_containers.resolve_rev(container_name, False)[1]
+                rev = self.repo_containers.resolve_rev(container_name + ':' + container_name, False)[1]
             else:
                 rev = rev_number
             self.logger.info("Rev value:{}".format(rev))
@@ -247,11 +251,12 @@ class AsyncUpdater(object):
             progress = OSTree.AsyncProgress.new()
             progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
             
-            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE), 'refs': GLib.Variant('as', (rev_number,))})
+            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE), 
+                                          'refs': GLib.Variant('as', (rev_number,)),
+                                          'depth': GLib.Variant('i', OSTREE_DEPTH)})
             res = self.repo_os.pull_with_options(self.remote_name_os, opts, progress, None)
             progress.finish()
-
-            self.logger.info("Upgrader pulled rev: {} osname: {}".format(rev_number, self.remote_name_os))
+            self.logger.info("Upgrader pulled remote {} from OSTree repo, osname: {}".format(self.remote_name_os, self.remote_name_os))
             [res, checksum] = self.repo_os.resolve_rev(rev_number, False)
             origin = first_deployment.get_origin()
 
