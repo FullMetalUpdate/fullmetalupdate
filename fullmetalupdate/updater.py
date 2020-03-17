@@ -5,6 +5,7 @@ import logging
 import traceback
 import gi, os
 import shutil
+import subprocess
 
 gi.require_version("OSTree", "1.0")
 from gi.repository import OSTree, GLib, Gio
@@ -267,14 +268,18 @@ class AsyncUpdater(object):
             self.logger.info("Write the new deployment")
 
             if res:
-                self.logger.info("Deployed")
-                if res is True:
-                    self.logger.warning("Deploying {}: operation succeed (modifications will be taken into account after reboot".format(self.remote_name_os))
+                self.logger.warning("Deploying {}: operation succeed (modifications will be taken into account after reboot".format(self.remote_name_os))
+
+                self.logger.info("Deleting init_var u-boot environment variable")
+                if subprocess.call(["fw_setenv", "init_var"]) != 0:
+                    self.logger.error("Deleting init_var variable from u-boot environment failed")
                 else:
-                    self.logger.error("Deploying {}: operation FAILED".format(self.remote_name_os))
+                    self.logger.info("Deleting init_var variable from u-boot environment succeeded")
+            else:
+                self.logger.error("Deploying {}: operation FAILED".format(self.remote_name_os))
 
             return res
 
-        except GLib.Error as e:
+        except (GLib.Error, subprocess.CalledProcessError) as e:
             self.logger.error("Update System {} from OSTree repo failed ({})".format(self.remote_name_os, str(e)))
             return False
