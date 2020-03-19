@@ -48,6 +48,50 @@ class AsyncUpdater(object):
             self.logger.info("No preinstalled OSTree for containers, we create one")
             self.repo_containers.create(OSTree.RepoMode.BARE_USER_ONLY, None)
 
+    def check_for_rollback(self):
+        """
+        Function used to execute the different commands needed for the rollback to be
+        effective.
+        We check :
+         - if the number of trials equals to five (meaning we've rebooted five times);
+         - if there is a pending deployment (meaning we've rollbacked).
+        If so, it means we have effectively rollbacked and we can undeploy the failed
+        deployment.
+        Returns :
+         - True when the system has rollbacked
+         - False otherwise
+        """
+        try:
+            has_rollbacked = False
+            mark_successful = subprocess.call(["fw_setenv", "success", "1"])
+
+            if mark_successful != 0:
+                self.logger.error("Setting success u-boot environment variable to 1 failed")
+            else:
+                self.logger.info("Setting success u-boot environment variable to 1 succeeded")
+
+            trial_nb    = subprocess.check_output(["fw_printenv", "-n", "trials"]).decode("utf-8").strip()
+            deployments = self.sysroot.query_deployments_for(None)
+            # returns [pendings deployments, rollback deployments]
+
+            if ((trial_nb == "5") and (deployments[0] is not None)):
+                self.logger.info("There is a pending deployment. Undeploying...")
+                undeploy_pending = subprocess.call(["ostree", "admin", "undeploy", "0"])
+                # 0 is the index of the pending deployment (if there is one)
+                if undeploy_pending != 0:
+                    self.logger.error("Undeployment failed")
+                else:
+                    self.logger.info("Undeployment successful")
+                    has_rollbacked = True
+            else:
+                self.logger.info("No undeployment needed")
+
+            return has_rollbacked
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error("Ostree rollback post-process commands failed ({})".format(str(e)))
+            return False
+
     def init_ostree_remotes(self, ostree_remote_attributes):
         res = True
         self.ostree_remote_attributes = ostree_remote_attributes
