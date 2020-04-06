@@ -162,14 +162,14 @@ class AsyncUpdater(object):
         self.logger.info("Enable the container {}".format(container_name))
         self.systemd.EnableUnitFiles([container_name + '.service'], False, False)
         self.logger.info("Since FILE_AUTOSTART is present, start the container using systemd")
-        self.systemd.StartUnit(container_name + '.service', "fail")
+        self.systemd.StartUnit(container_name + '.service', "replace")
 
     def stop_unit(self, container_name):
         self.logger.info("Since FILE_AUTOSTART is not present, stop the container using systemd")
-        self.systemd.StopUnit(container_name + '.service', "fail")
+        self.systemd.StopUnit(container_name + '.service', "replace")
         self.logger.info("Disable the container {}".format(container_name))
         self.systemd.DisableUnitFiles([container_name + '.service'], False)
-        
+
     def create_and_start_unit(self, container_name):
         res = True
         try:
