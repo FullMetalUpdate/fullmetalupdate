@@ -6,6 +6,7 @@ import traceback
 import gi, os
 import shutil
 import subprocess
+import json
 
 gi.require_version("OSTree", "1.0")
 from gi.repository import OSTree, GLib, Gio
@@ -15,6 +16,7 @@ PATH_APPS = '/apps'
 PATH_REPO_OS = '/ostree/repo/'
 PATH_REPO_APPS = PATH_APPS + '/ostree_repo'
 PATH_SYSTEMD_UNITS = '/etc/systemd/system/'
+PATH_CURRENT_REVISIONS = '/var/local/fullmetalupdate/current_revs.json'
 VALIDATE_CHECKOUT = 'CheckoutDone'
 FILE_AUTOSTART = 'auto.start'
 CONTAINER_UID = 1000
@@ -136,6 +138,37 @@ class AsyncUpdater(object):
    
         return res
 
+    def set_current_revision(self, container_name, rev):
+        """
+        This method write rev into a json file containing the current working rev for the
+        containers.
+        """
+        try:
+            with open(PATH_CURRENT_REVISIONS, "r") as f:
+                current_revs = json.load(f)
+            current_revs.update({container_name: rev})
+            with open(PATH_CURRENT_REVISIONS, "w") as f:
+                json.dump(current_revs, f, indent=4)
+        except FileNotFoundError:
+            with open(PATH_CURRENT_REVISIONS, "w") as f:
+                current_revs = {container_name: rev}
+                json.dump(current_revs, f, indent=4)
+
+    def get_previous_rev(self, container_name):
+        """
+        This method returns the previous working revision of a notify container.
+
+        If the file is not found of the container name is not found in the file,
+        it will return None. This means this is the first installation of the container.
+        """
+        try:
+            with open(PATH_CURRENT_REVISIONS, "r") as f:
+                current_revs = json.load(f)
+            return current_revs[container_name]
+        except (FileNotFoundError, KeyError):
+            return None
+
+
     def init_checkout_existing_containers(self):
         res = True
         self.logger.info("Getting refs from repo:{}".format(PATH_REPO_APPS))
@@ -182,7 +215,8 @@ class AsyncUpdater(object):
             res = False
         return res
 
-    def update_container(self, container_name, rev_number, autostart, autoremove):
+    def update_container(self, container_name, rev_number, autostart, autoremove,
+                         notify=None, timeout=None):
         """
         Update the given container. To do so, it checks the container status (active, loaded, etc...)
         If necessary, container is stopped. Files are checked out to the installation folder.
@@ -224,6 +258,7 @@ class AsyncUpdater(object):
             self.logger.error("Pulling {} from OSTree repo failed ({})".format(container_name, str(e)))
             res = False
         else:
+
             if not service_name is None:
                 self.logger.info("Stop the container {}".format(container_name))
                 self.stop_unit(container_name)
@@ -242,6 +277,9 @@ class AsyncUpdater(object):
             if not res:
                 self.logger.error("Checking out container {} Failed!".format(container_name))
             else:
+                if notify == 1:
+                    self.create_and_start_feedback_thread(container_name, rev_number,
+                                                          autostart, autoremove, timeout)
                 if autoremove == 1:
                     self.logger.info("Remove the directory: {}".format(PATH_APPS + '/' + container_name))
                     shutil.rmtree(PATH_APPS + '/' + container_name)

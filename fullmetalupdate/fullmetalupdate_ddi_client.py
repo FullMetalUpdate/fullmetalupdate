@@ -11,6 +11,8 @@ import os.path
 import re
 import logging
 import json
+import threading
+import socket as s
 
 from fullmetalupdate.updater import AsyncUpdater
 from rauc_hawkbit.ddi.client import DDIClient, APIError
@@ -22,6 +24,8 @@ from rauc_hawkbit.ddi.cancel_action import (
     CancelStatusExecution, CancelStatusResult)
 
 PATH_REBOOT_DATA = '/var/local/fullmetalupdate/reboot_data.json'
+PATH_NOTIFY_SOCKET = "/tmp/fullmetalupdate/fullmetalupdate_notify.sock"
+
 
 class FullMetalUpdateDDIClient(AsyncUpdater):
     """
@@ -41,6 +45,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         self.lock_keeper = lock_keeper
 
         os.makedirs(os.path.dirname(PATH_REBOOT_DATA), exist_ok=True)
+        os.makedirs(os.path.dirname(PATH_NOTIFY_SOCKET), exist_ok=True)
 
     async def start_polling(self, wait_on_error=60):
         """Wrapper around self.poll_base_resource() for exception handling."""
@@ -131,6 +136,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         rev = None
         autostart = None
         autoremove = None
+        notify = None
+        timeout = None
+
         for chunk in deploy_info['deployment']['chunks']:
             for meta in chunk['metadata']:
                 if meta['key'] == 'rev':
@@ -139,9 +147,14 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     autostart = int(meta['value'])
                 if meta['key'] == 'autoremove':
                     autoremove = int(meta['value'])
+                if meta['key'] == 'notify':
+                    notify = int(meta['value'])
+                if meta['key'] == 'timeout':
+                    timeout = int(meta['value'])
             self.logger.info("Updating chunk part: {}".format(chunk['part']))
 
             if chunk['part'] == 'os':
+
                 # checking if we just rebooted and we need to send the feedback in which
                 # case we don't need to pull the update image again
                 [feedback, reboot_data] = self.feedback_for_os_deployment()
@@ -172,29 +185,38 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                                            status_result,
                                            msg)
 
+                self.action_id = None
+
             elif chunk['part'] == 'bApp':
+
+                res = False
                 self.logger.info("App {} v.{} - updating...".format(chunk['name'], chunk['version']))
-                res = self.update_container(chunk['name'], rev, autostart, autoremove)
+
+                res = self.update_container(chunk['name'], rev, autostart, autoremove,
+                                            notify, timeout)
+
+                status_execution = DeploymentStatusExecution.closed
+
                 if not res:
                     self.logger.error("App {} v.{} Deployment failed".format(chunk['name'], chunk['version']))
                     msg = "App {} v.{} Deployment failed".format(chunk['name'], chunk['version'])
                     status_result = DeploymentStatusResult.failure
-                else:
+                    await self.ddi.deploymentBase[self.action_id].feedback(
+                        status_execution, status_result, [msg])
+                    self.action_id = None
+                elif notify != 1:
                     self.logger.info("App {} v.{} Deployment succeed".format(chunk['name'], chunk['version']))
                     msg = "App {} v.{} Deployment succeed".format(chunk['name'], chunk['version'])
                     status_result = DeploymentStatusResult.success
-
-                status_execution = DeploymentStatusExecution.closed
-
-                await self.ddi.deploymentBase[self.action_id].feedback(
-                    status_execution, status_result, [msg])
+                    await self.ddi.deploymentBase[self.action_id].feedback(
+                        status_execution, status_result, [msg])
+                    self.action_id = None
 
         if reboot_needed :
             try:
                 subprocess.run("reboot")
             except subprocess.CalledProcessError as e:
                 self.logger.error("Reboot failed: {}".format(e))
-        self.action_id = None
 
     async def sleep(self, base):
         """Sleep time suggested by HawkBit."""
@@ -259,3 +281,117 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         os.remove(PATH_REBOOT_DATA)
 
         return (True, reboot_data)
+
+    def create_and_start_feedback_thread(self, container_name, rev, autostart, autoremove, timeout):
+        """
+        This method is called from the updater and used to initialize and start the
+        feedback thread used to feedback the server the status of the notify container.
+        See the container_feedbacker thread method.
+        """
+        self.logger.info("Creating socket {}".format(PATH_NOTIFY_SOCKET))
+        sock = s.socket(s.AF_UNIX, s.SOCK_STREAM)
+        sock.settimeout(timeout)
+        if os.path.exists(PATH_NOTIFY_SOCKET):
+            os.remove(PATH_NOTIFY_SOCKET)
+        sock.bind(PATH_NOTIFY_SOCKET)
+
+        container_feedbackd = threading.Thread(
+            target=self.container_feedbacker,
+            args = (asyncio.get_event_loop(),
+                    sock,
+                    container_name,
+                    rev,
+                    autostart,
+                    autoremove),
+            name="container-feedback")
+        container_feedbackd.start()
+
+    def container_feedbacker(self,
+                             event_loop,
+                             socket,
+                             container_name,
+                             rev_number,
+                             autostart,
+                             autoremove):
+        """
+        This thread method is meant to feedback the server for containers which provide
+        the notify feature of systemd. It will trigger a rollback on the container in case
+        of failure (if possible).
+        This method will wait on an Unix socket for information about the notify result,
+        and proceed in consequence.
+        """
+
+        try:
+            socket.listen(1)
+            conn, addr = socket.accept()
+            datagram = conn.recv(1024)
+
+            if datagram:
+                systemd_info = datagram.strip().decode("utf-8").split()
+                self.logger.debug("Datagram received : {}".format(systemd_info))
+                if (systemd_info[0] == 'success'):
+                    # feedback the server positively
+                    msg = "The notify container started successfully"
+                    status_result = DeploymentStatusResult.success
+                    status_execution = DeploymentStatusExecution.closed
+                    self.logger.info(msg)
+                    asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
+                        status_execution, status_result, [msg]), event_loop)
+                    # Write this new revision for future updates
+                    self.set_current_revision(container_name, rev_number)
+                else:
+                    # rollback + feedback the server
+                    status_result = DeploymentStatusResult.failure
+                    status_execution = DeploymentStatusExecution.closed
+                    end_msg = ""
+                    previous_rev = self.get_previous_rev(container_name)
+                    if previous_rev is None:
+                        end_msg = "\nFirst installation of the container, cannot rollback."
+                    else:
+                        res = self.update_container(container_name,
+                                                    previous_rev,
+                                                    autostart,
+                                                    autoremove)
+                        if res:
+                            end_msg = "\nContainer has rollbacked."
+                        else:
+                            end_msg = "\nContainer has failed to rollback."
+                    msg = "The container failed to start with result :" \
+                        + "\n\tSERVICE_RESULT=" + systemd_info[0] \
+                        + "\n\tEXIT_CODE=" + systemd_info[1] \
+                        + "\n\tEXIT_STATUS=" + systemd_info[2] \
+                        + end_msg
+                    self.logger.info(msg)
+                    asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
+                        status_execution, status_result, [msg]), event_loop)
+        except s.timeout as e:
+            msg = "The socket timed out."
+            self.logger.error(msg)
+            previous_rev = self.get_previous_rev(container_name)
+            end_msg = ""
+            if previous_rev is None:
+                end_msg = "\nFirst installation of the container, cannot rollback."
+            else:
+                res = self.update_container(container_name,
+                                            previous_rev,
+                                            autostart,
+                                            autoremove)
+                if res:
+                    end_msg = "\nContainer has rollbacked."
+                else:
+                    end_msg = "\nContainer has failed to rollback."
+
+            status_result = DeploymentStatusResult.failure
+            status_execution = DeploymentStatusExecution.closed
+
+            asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
+                status_execution, status_result, [msg + end_msg]), event_loop)
+
+        socket.close()
+        self.logger.info("Removing socket {}".format(PATH_NOTIFY_SOCKET))
+        try:
+            os.remove(PATH_NOTIFY_SOCKET)
+        except FileNotFoundError as e:
+            self.logger.error("Error while removing socket ({})".format(e))
+
+        self.action_id = None
