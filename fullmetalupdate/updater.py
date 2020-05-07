@@ -153,7 +153,7 @@ class AsyncUpdater(object):
             progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
 
             opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE), 
-                                          'refs': GLib.Variant('as', (container_name,)),
+                                          'refs': GLib.Variant('as', (rev_number,)),
                                           'depth': GLib.Variant('i', OSTREE_DEPTH)})
             self.logger.info("Pulling remote {} from OSTree repo, branch ({})".format(container_name, container_name))
             res = self.repo_containers.pull_with_options(container_name, opts, progress, None)
