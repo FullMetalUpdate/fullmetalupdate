@@ -33,10 +33,12 @@ class AsyncUpdater(object):
 
         self.sysroot = OSTree.Sysroot.new_default()
         self.sysroot.load(None)
+        self.logger.info("Cleaning the sysroot")
+        self.sysroot.cleanup(None)
 
         [res,repo] = self.sysroot.get_repo()
         self.repo_os = repo
-        
+
         self.repo_containers = OSTree.Repo.new(Gio.File.new_for_path(PATH_REPO_APPS))
         if os.path.exists(PATH_REPO_APPS):
             self.logger.info("Preinstalled OSTree for containers, we use it")
@@ -263,7 +265,6 @@ class AsyncUpdater(object):
             [res, _] = self.sysroot.stage_tree(osname, checksum, origin, first_deployment, None, None)
 
             self.logger.info("Write the new deployment")
-            self.sysroot.cleanup(None)
 
             if res:
                 self.logger.info("Deployed")
