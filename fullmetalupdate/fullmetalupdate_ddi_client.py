@@ -10,6 +10,7 @@ import os
 import os.path
 import re
 import logging
+import json
 
 from fullmetalupdate.updater import AsyncUpdater
 from rauc_hawkbit.ddi.client import DDIClient, APIError
@@ -19,6 +20,8 @@ from rauc_hawkbit.ddi.deployment_base import (
     DeploymentStatusExecution, DeploymentStatusResult)
 from rauc_hawkbit.ddi.cancel_action import (
     CancelStatusExecution, CancelStatusResult)
+
+PATH_REBOOT_DATA = '/var/local/fullmetalupdate/reboot_data.json'
 
 class FullMetalUpdateDDIClient(AsyncUpdater):
     """
@@ -36,6 +39,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         self.action_id = None
 
         self.lock_keeper = lock_keeper
+
+        os.makedirs(os.path.dirname(PATH_REBOOT_DATA), exist_ok=True)
 
     async def start_polling(self, wait_on_error=60):
         """Wrapper around self.poll_base_resource() for exception handling."""
@@ -137,17 +142,36 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             self.logger.info("Updating chunk part: {}".format(chunk['part']))
 
             if chunk['part'] == 'os':
+                # checking if we just rebooted and we need to send the feedback in which
+                # case we don't need to pull the update image again
+                [feedback, reboot_data] = self.feedback_for_os_deployment()
+                if feedback:
+                    await self.ddi.deploymentBase[reboot_data["action_id"]].feedback(
+                                DeploymentStatusExecution(reboot_data["status_execution"]),
+                                DeploymentStatusResult(reboot_data["status_result"]),
+                                [reboot_data["msg"]])
+                    self.action_id = None
+                    return
+
                 self.logger.info("OS {} v.{} - updating...".format(chunk['name'], chunk['version']))
                 res = self.update_system(rev)
+                status_execution = DeploymentStatusExecution.closed
                 if not res:
                     self.logger.error("OS {} v.{} Deployment failed".format(chunk['name'], chunk['version']))
                     msg = "OS {} v.{} Deployment failed".format(chunk['name'], chunk['version'])
                     status_result = DeploymentStatusResult.failure
+                    await self.ddi.deploymentBase[self.action_id].feedback(
+                        status_execution, status_result, [msg])
                 else:
                     self.logger.info("OS {} v.{} Deployment succeed".format(chunk['name'], chunk['version']))
                     msg = "OS {} v.{} Deployment succeed".format(chunk['name'], chunk['version'])
                     status_result = DeploymentStatusResult.success
                     reboot_needed = True
+                    self.write_reboot_data(self.action_id,
+                                           status_execution,
+                                           status_result,
+                                           msg)
+
             elif chunk['part'] == 'bApp':
                 self.logger.info("App {} v.{} - updating...".format(chunk['name'], chunk['version']))
                 res = self.update_container(chunk['name'], rev, autostart, autoremove)
@@ -160,14 +184,11 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     msg = "App {} v.{} Deployment succeed".format(chunk['name'], chunk['version'])
                     status_result = DeploymentStatusResult.success
 
-        status_execution = DeploymentStatusExecution.closed
-        if status_result != DeploymentStatusResult.failure:
-            msg = "FullMetalUpdate: success"
+                status_execution = DeploymentStatusExecution.closed
 
-        status_execution = DeploymentStatusExecution.closed
-
-        await self.ddi.deploymentBase[self.action_id].feedback(
+                await self.ddi.deploymentBase[self.action_id].feedback(
                     status_execution, status_result, [msg])
+
         if reboot_needed :
             try:
                 subprocess.run("reboot")
@@ -197,3 +218,44 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     await self.cancel(base)
 
             await self.sleep(base)
+
+    def write_reboot_data(self, action_id, status_execution, status_result, msg):
+
+        # the enums are not serializable thus we store their value
+        reboot_data = {
+            "action_id": action_id,
+            "status_execution": status_execution.value,
+            "status_result": status_result.value,
+            "msg": msg
+        }
+
+        try:
+            with open(PATH_REBOOT_DATA, "w") as f:
+                json.dump(reboot_data, f)
+        except IOError as e:
+            self.logger.error("Writing reboot data failed ({})".format(e))
+
+
+    def feedback_for_os_deployment(self):
+        """
+        This method will generate a feedback message for the Hawkbit server and
+        return the reboot data which will be used by the the DDI client to return
+        the appropriate feedback message.
+        """
+
+        reboot_data = None
+        try:
+            with open(PATH_REBOOT_DATA, "r") as f:
+                reboot_data = json.load(f)
+            if reboot_data is None:
+                self.logger.error("Rebooting data loading failed")
+        except FileNotFoundError:
+            return (False, None)
+
+        if self.check_for_rollback():
+            reboot_data.update({"status_result": DeploymentStatusResult.failure.value})
+            reboot_data.update({"msg": "Deployment has failed and system has rollbacked"})
+
+        os.remove(PATH_REBOOT_DATA)
+
+        return (True, reboot_data)
