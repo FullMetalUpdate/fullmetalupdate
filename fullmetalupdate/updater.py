@@ -29,6 +29,8 @@ class AsyncUpdater(object):
     def __init__(self):
         self.logger = logging.getLogger('fullmetalupdate_container_updater')
 
+        self.mark_os_successful()
+
         bus = SystemBus()
         self.systemd = bus.get('.systemd1')
 
@@ -48,6 +50,25 @@ class AsyncUpdater(object):
             self.logger.info("No preinstalled OSTree for containers, we create one")
             self.repo_containers.create(OSTree.RepoMode.BARE_USER_ONLY, None)
 
+    def mark_os_successful(self):
+        """
+        This method marks the currently running OS as successful by setting the init_var u-boot
+        environment variable to 1.
+        Returns :
+         - True if the variable was successfully set
+         - False otherwise
+        """
+        try:
+            mark_successful = subprocess.call(["fw_setenv", "success", "1"])
+
+            if mark_successful == 0:
+                self.logger.info("Setting success u-boot environment variable to 1 succeeded")
+            else:
+                self.logger.error("Setting success u-boot environment variable to 1 failed")
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error("Ostree rollback post-process commands failed ({})".format(str(e)))
+
     def check_for_rollback(self):
         """
         Function used to execute the different commands needed for the rollback to be
@@ -63,12 +84,6 @@ class AsyncUpdater(object):
         """
         try:
             has_rollbacked = False
-            mark_successful = subprocess.call(["fw_setenv", "success", "1"])
-
-            if mark_successful != 0:
-                self.logger.error("Setting success u-boot environment variable to 1 failed")
-            else:
-                self.logger.info("Setting success u-boot environment variable to 1 succeeded")
 
             trial_nb    = subprocess.check_output(["fw_printenv", "-n", "trials"]).decode("utf-8").strip()
             deployments = self.sysroot.query_deployments_for(None)
