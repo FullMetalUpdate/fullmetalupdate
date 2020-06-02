@@ -343,19 +343,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     # rollback + feedback the server
                     status_result = DeploymentStatusResult.failure
                     status_execution = DeploymentStatusExecution.closed
-                    end_msg = ""
-                    previous_rev = self.get_previous_rev(container_name)
-                    if previous_rev is None:
-                        end_msg = "\nFirst installation of the container, cannot rollback."
-                    else:
-                        res = self.update_container(container_name,
-                                                    previous_rev,
-                                                    autostart,
-                                                    autoremove)
-                        if res:
-                            end_msg = "\nContainer has rollbacked."
-                        else:
-                            end_msg = "\nContainer has failed to rollback."
+                    end_msg = self.rollback_container(container_name,
+                                                      autostart,
+                                                      autoremove)
                     msg = "The container failed to start with result :" \
                         + "\n\tSERVICE_RESULT=" + systemd_info[0] \
                         + "\n\tEXIT_CODE=" + systemd_info[1] \
@@ -365,25 +355,14 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
                         status_execution, status_result, [msg]), event_loop)
         except s.timeout as e:
-            msg = "The socket timed out."
-            self.logger.error(msg)
-            previous_rev = self.get_previous_rev(container_name)
-            end_msg = ""
-            if previous_rev is None:
-                end_msg = "\nFirst installation of the container, cannot rollback."
-            else:
-                res = self.update_container(container_name,
-                                            previous_rev,
-                                            autostart,
-                                            autoremove)
-                if res:
-                    end_msg = "\nContainer has rollbacked."
-                else:
-                    end_msg = "\nContainer has failed to rollback."
-
+            # socket timeout, try to rollback if possible
             status_result = DeploymentStatusResult.failure
             status_execution = DeploymentStatusExecution.closed
-
+            msg = "The socket timed out."
+            self.logger.error(msg)
+            end_msg = self.rollback_container(container_name,
+                                              autostart,
+                                              autoremove)
             asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
                 status_execution, status_result, [msg + end_msg]), event_loop)
 
@@ -395,3 +374,26 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             self.logger.error("Error while removing socket ({})".format(e))
 
         self.action_id = None
+
+    def rollback_container(self, container_name, autostart, autoremove):
+        """
+        This method Rollbacks the container, if possible, and returns a message that will
+        be sent to the server.
+        """
+
+        end_msg = ""
+        previous_rev = self.get_previous_rev(container_name)
+
+        if previous_rev is None:
+            end_msg = "\nFirst installation of the container, cannot rollback."
+        else:
+            res = self.update_container(container_name,
+                                        previous_rev,
+                                        autostart,
+                                        autoremove)
+            if res:
+                end_msg = "\nContainer has rollbacked."
+            else:
+                end_msg = "\nContainer has failed to rollback."
+
+        return end_msg
