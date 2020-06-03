@@ -241,6 +241,25 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
             await self.sleep(base)
 
+    def update_container(self, container_name, rev_number, autostart, autoremove,
+                         notify=None, timeout=None):
+        """
+        Wrapper method to execute the different steps of a container update.
+        """
+        try:
+            self.init_container_remote(container_name)
+            self.pull_ostree_ref(True, container_name, rev_number)
+            self.checkout_container(container_name, rev_number)
+            self.update_container_ids(container_name)
+            if (autostart == 1) and (notify == 1) and (autoremove != 1):
+                self.create_and_start_feedback_thread(container_name, rev_number,
+                                                      autostart, autoremove, timeout)
+            self.handle_unit(container_name, autostart, autoremove)
+        except Exception as e:
+            self.logger.error("Updating {} failed ({})".format(container_name, e))
+            return False
+        return True
+
     def write_reboot_data(self, action_id, status_execution, status_result, msg):
 
         # the enums are not serializable thus we store their value
