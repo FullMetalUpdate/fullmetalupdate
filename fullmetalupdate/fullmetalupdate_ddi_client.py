@@ -157,7 +157,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
                 # checking if we just rebooted and we need to send the feedback in which
                 # case we don't need to pull the update image again
-                [feedback, reboot_data] = self.feedback_for_os_deployment()
+                [feedback, reboot_data] = self.feedback_for_os_deployment(rev)
                 if feedback:
                     await self.ddi.deploymentBase[reboot_data["action_id"]].feedback(
                                 DeploymentStatusExecution(reboot_data["status_execution"]),
@@ -258,7 +258,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             self.logger.error("Writing reboot data failed ({})".format(e))
 
 
-    def feedback_for_os_deployment(self):
+    def feedback_for_os_deployment(self, revision):
         """
         This method will generate a feedback message for the Hawkbit server and
         return the reboot data which will be used by the the DDI client to return
@@ -274,7 +274,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         except FileNotFoundError:
             return (False, None)
 
-        if self.check_for_rollback():
+        if self.check_for_rollback(revision):
             reboot_data.update({"status_result": DeploymentStatusResult.failure.value})
             reboot_data.update({"msg": "Deployment has failed and system has rollbacked"})
 

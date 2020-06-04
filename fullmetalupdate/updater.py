@@ -71,15 +71,14 @@ class AsyncUpdater(object):
         except subprocess.CalledProcessError as e:
             self.logger.error("Ostree rollback post-process commands failed ({})".format(str(e)))
 
-    def check_for_rollback(self):
+    def check_for_rollback(self, revision):
         """
         Function used to execute the different commands needed for the rollback to be
         effective.
         We check :
-         - if the number of trials equals to five (meaning we've rebooted five times);
-         - if there is a pending deployment (meaning we've rollbacked).
-        If so, it means we have effectively rollbacked and we can undeploy the failed
-        deployment.
+         - if the booted deployment's revision matches the server's revision
+         - if so, check if there is a pending deployment (meaning we've rollbacked) and
+           undeploy it.
         Returns :
          - True when the system has rollbacked
          - False otherwise
@@ -87,19 +86,22 @@ class AsyncUpdater(object):
         try:
             has_rollbacked = False
 
-            trial_nb    = subprocess.check_output(["fw_printenv", "-n", "trials"]).decode("utf-8").strip()
-            deployments = self.sysroot.query_deployments_for(None)
             # returns [pendings deployments, rollback deployments]
+            deployments = self.sysroot.query_deployments_for(None)
 
-            if ((trial_nb == "5") and (deployments[0] is not None)):
-                self.logger.info("There is a pending deployment. Undeploying...")
-                undeploy_pending = subprocess.call(["ostree", "admin", "undeploy", "0"])
-                # 0 is the index of the pending deployment (if there is one)
-                if undeploy_pending != 0:
-                    self.logger.error("Undeployment failed")
-                else:
-                    self.logger.info("Undeployment successful")
-                    has_rollbacked = True
+            # the deployment we are booted on
+            booted_deployment_rev = self.sysroot.get_booted_deployment().get_csum()
+
+            if (booted_deployment_rev != revision):
+                has_rollbacked = True
+                self.logger.warning("The system rollbacked. Checking if we needed to undeploy")
+                if (deployments[0] is not None):
+                    self.logger.info("There is a pending deployment. Undeploying...")
+                    # 0 is the index of the pending deployment (if there is one)
+                    if subprocess.call(["ostree", "admin", "undeploy", "0"]) != 0:
+                        self.logger.error("Undeployment failed")
+                    else:
+                        self.logger.info("Undeployment successful")
             else:
                 self.logger.info("No undeployment needed")
 
