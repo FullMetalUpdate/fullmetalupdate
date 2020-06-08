@@ -44,6 +44,7 @@ class AsyncUpdater(object):
         [res,repo] = self.sysroot.get_repo()
         self.repo_os = repo
 
+        self.remote_name_os = None
         self.repo_containers = OSTree.Repo.new(Gio.File.new_for_path(PATH_REPO_APPS))
         if os.path.exists(PATH_REPO_APPS):
             self.logger.info("Preinstalled OSTree for containers, we use it")
@@ -207,18 +208,25 @@ class AsyncUpdater(object):
         if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
             self.start_unit(container_name)
 
-    def pull_ostree_ref(self, is_container, ref_name, ref_sha):
+    def pull_ostree_ref(self, is_container, ref_sha, ref_name=None):
         """
         Wrapper method to pull a ref from an ostree remote.
 
         Parameters:
         is_container (bool): set to True if you are pulling for a container,
                              set to False for the OS
-        ref_name (str): the ref name (can be the name of the container or the OS name)
         ref_sha (str): the ref commit sha to pull
+        ref_name (str): the ref name (can be the name of the container, if None, the OS
+                        name will be set)
         """
         res = True
-        repo = self.repo_containers if is_container else self.repo_os
+
+        if is_container:
+            repo = self.repo_containers
+        else:
+            repo = self.repo_os
+            ref_name = self.remote_name_os
+
         try:
             progress = OSTree.AsyncProgress.new()
             progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
@@ -226,9 +234,10 @@ class AsyncUpdater(object):
             opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE),
                                           'refs': GLib.Variant('as', (ref_sha,)),
                                           'depth': GLib.Variant('i', OSTREE_DEPTH)})
-            self.logger.info("Pulling remote {} from OSTree repo".format(ref_name))
+            self.logger.info("Pulling remote {} from OSTree repo ({})".format(ref_name, ref_sha))
             res = repo.pull_with_options(ref_name, opts, progress, None)
             progress.finish()
+            self.logger.info("Upgrader pulled {} from OSTree repo ({})".format(ref_name, ref_sha))
         except GLib.Error as e:
             self.logger.error("Pulling {} from OSTree repo failed ({})".format(ref_name, str(e)))
             raise
@@ -331,51 +340,39 @@ class AsyncUpdater(object):
         if not res:
             raise Exception("Checking out {} failed (returned False)")
 
-    def update_system(self, rev_number):
+    def ostree_stage_tree(self, rev_number):
         """
-        Update the whole system using deploy mechanism.
-        name is the repo branch name and target name
+        Wrapper around sysroot.stage_tree().
         """
         try:
-            deployments = self.sysroot.get_deployments()
-            if deployments is None:
-                self.logger.error("Not booted in an OSTree system")
-                return
+            booted_dep = self.sysroot.get_booted_deployment()
+            if booted_dep is None:
+                raise Exception("Not booted in an OSTree system")
+            [_, checksum] = self.repo_os.resolve_rev(rev_number, False)
+            origin = booted_dep.get_origin()
+            osname = booted_dep.get_osname()
 
-            first_deployment = deployments[0]
-            starting_revision = first_deployment.get_csum()
-            osname = first_deployment.get_osname()
-            self.logger.info("Using OS {} revision {}".format(osname, starting_revision))
+            [res, _] = self.sysroot.stage_tree(osname, checksum, origin, booted_dep, None, None)
 
-            progress = OSTree.AsyncProgress.new()
-            progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
-            
-            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE), 
-                                          'refs': GLib.Variant('as', (rev_number,)),
-                                          'depth': GLib.Variant('i', OSTREE_DEPTH)})
-            res = self.repo_os.pull_with_options(self.remote_name_os, opts, progress, None)
-            progress.finish()
-            self.logger.info("Upgrader pulled remote {} from OSTree repo, osname: {}".format(self.remote_name_os, self.remote_name_os))
-            [res, checksum] = self.repo_os.resolve_rev(rev_number, False)
-            origin = first_deployment.get_origin()
+            self.logger.info("Staged the new OS tree. The new deployment will be ready after a reboot")
 
-            [res, _] = self.sysroot.stage_tree(osname, checksum, origin, first_deployment, None, None)
+        except GLib.Error as e:
+            self.logger.error("Failed while staging new OS tree ({})".format(e))
+            raise
+        if not res:
+            raise Exception("Failed while staging new OS tree (returned False)")
 
-            self.logger.info("Write the new deployment")
-
-            if res:
-                self.logger.warning("Deploying {}: operation succeed (modifications will be taken into account after reboot".format(self.remote_name_os))
-
-                self.logger.info("Deleting init_var u-boot environment variable")
-                if subprocess.call(["fw_setenv", "init_var"]) != 0:
-                    self.logger.error("Deleting init_var variable from u-boot environment failed")
-                else:
-                    self.logger.info("Deleting init_var variable from u-boot environment succeeded")
+    def delete_init_var(self):
+        """
+        This method delete u-boot's environment variable init_var, to restart the rollback
+        procedure.
+        """
+        try:
+            self.logger.info("Deleting init_var u-boot environment variable")
+            if subprocess.call(["fw_setenv", "init_var"]) != 0:
+                self.logger.error("Deleting init_var variable from u-boot environment failed")
             else:
-                self.logger.error("Deploying {}: operation FAILED".format(self.remote_name_os))
-
-            return res
-
-        except (GLib.Error, subprocess.CalledProcessError) as e:
-            self.logger.error("Update System {} from OSTree repo failed ({})".format(self.remote_name_os, str(e)))
-            return False
+                self.logger.info("Deleting init_var variable from u-boot environment succeeded")
+        except subprocess.CalledProcessError as e:
+            self.logger.error("Deleting init_var variable from u-boot environment failed ({})".format(e))
+            raise

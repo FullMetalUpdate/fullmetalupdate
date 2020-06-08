@@ -248,7 +248,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         """
         try:
             self.init_container_remote(container_name)
-            self.pull_ostree_ref(True, container_name, rev_number)
+            self.pull_ostree_ref(True, rev_number, container_name)
             self.checkout_container(container_name, rev_number)
             self.update_container_ids(container_name)
             if (autostart == 1) and (notify == 1) and (autoremove != 1):
@@ -257,6 +257,19 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             self.handle_unit(container_name, autostart, autoremove)
         except Exception as e:
             self.logger.error("Updating {} failed ({})".format(container_name, e))
+            return False
+        return True
+
+    def update_system(self, rev_number):
+        """
+        Wrapper method to execute the different steps of a OS update.
+        """
+        try:
+            self.pull_ostree_ref(False, rev_number)
+            self.ostree_stage_tree(rev_number)
+            self.delete_init_var()
+        except Exception as e:
+            self.logger.error("Updating the OS failed ({})".format(e))
             return False
         return True
 
