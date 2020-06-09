@@ -12,12 +12,6 @@ import argparse
 from fullmetalupdate.fullmetalupdate_ddi_client import FullMetalUpdateDDIClient
 from distutils.util import strtobool
 
-def result_callback(result):
-    print("Result:   {}".format('SUCCESSFUL' if result == 0 else 'FAILED' ))
-
-def step_callback(percentage, message):
-    print("Progress: {:>3}% - {}".format(percentage, message))
-
 async def main():
     # config parsing
     config = ConfigParser()
@@ -94,8 +88,7 @@ async def main():
 
     async with aiohttp.ClientSession() as session:
         client = FullMetalUpdateDDIClient(session, HOST, SSL, TENANT_ID, TARGET_NAME,
-                                          AUTH_TOKEN, ATTRIBUTES,
-                                          result_callback, step_callback)
+                                          AUTH_TOKEN, ATTRIBUTES)
 
         if not client.init_checkout_existing_containers():
             client.logger.info("There is no containers pre-installed on the target")

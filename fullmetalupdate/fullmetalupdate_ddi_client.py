@@ -33,7 +33,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
     interface.
     """
     def __init__(self, session, host, ssl, tenant_id, target_name, auth_token,
-                 attributes, result_callback, step_callback=None, lock_keeper=None):
+                 attributes, lock_keeper=None):
         super(FullMetalUpdateDDIClient, self).__init__()
 
         self.attributes = attributes
