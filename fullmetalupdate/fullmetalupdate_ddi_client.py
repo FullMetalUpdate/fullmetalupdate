@@ -274,7 +274,15 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         return True
 
     def write_reboot_data(self, action_id, status_execution, status_result, msg):
+        """
+        Write information about the current update in a file.
 
+        Parameters:
+        action_id (int): the current action is (update id)
+        status_execution (enum): the execution status
+        status_result (enum): the result status
+        msg (str): the message to be sent to the server
+        """
         # the enums are not serializable thus we store their value
         reboot_data = {
             "action_id": action_id,
@@ -295,6 +303,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         This method will generate a feedback message for the Hawkbit server and
         return the reboot data which will be used by the the DDI client to return
         the appropriate feedback message.
+
+        Parameters:
+        revision (str): the OS revision
         """
 
         reboot_data = None
@@ -316,9 +327,16 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
     def create_and_start_feedback_thread(self, container_name, rev, autostart, autoremove, timeout):
         """
-        This method is called from the updater and used to initialize and start the
-        feedback thread used to feedback the server the status of the notify container.
-        See the container_feedbacker thread method.
+        This method is called to initialize and start the feedback thread used to
+        feedback the server the status of the notify container. See the
+        container_feedbacker thread method.
+
+        Parameters:
+        container_name (str): the name os the container
+        rev (str): the commit revision, used for rollbacking
+        autostart (int): autostart of the container, used for rollbacking
+        autoremove (int): autoremove of the container, used for rollbacking
+        timeout (int): timeout value of the communication socket
         """
         self.logger.info("Creating socket {}".format(PATH_NOTIFY_SOCKET))
         sock = s.socket(s.AF_UNIX, s.SOCK_STREAM)
@@ -346,11 +364,21 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                              autostart,
                              autoremove):
         """
-        This thread method is meant to feedback the server for containers which provide
+        This thread method is used to feedback the server for containers which provide
         the notify feature of systemd. It will trigger a rollback on the container in case
         of failure (if possible).
         This method will wait on an Unix socket for information about the notify result,
         and proceed in consequence.
+
+        Parameters:
+        event_loop (EventLoop): the main event loop. Used to perform a feedback from this
+                                thread.
+        socket (socket): the socket used for communication between the container service
+                         and this thread
+        container_name (str): the name of the container
+        rev_number (str): the commit revision, used for rollbacking
+        autostart (int): autostart of the container, used for rollbacking
+        autoremove (int): autoremove of the container, used for rollbacking
         """
 
         try:
@@ -411,6 +439,15 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         """
         This method Rollbacks the container, if possible, and returns a message that will
         be sent to the server.
+
+        Parameters:
+        container_name (str): the name of the container
+        autostart (int): autostart of the container
+        autoremove (int): autoremove of the container
+
+        Returns:
+        end_msg (str): the end of the message that will be sent, which depends on the
+                       status of the rollback (performed or not)
         """
 
         end_msg = ""

@@ -57,6 +57,7 @@ class AsyncUpdater(object):
         """
         This method marks the currently running OS as successful by setting the init_var u-boot
         environment variable to 1.
+
         Returns :
          - True if the variable was successfully set
          - False otherwise
@@ -113,6 +114,17 @@ class AsyncUpdater(object):
             return False
 
     def init_ostree_remotes(self, ostree_remote_attributes):
+        """
+        This method initializes the ostree remote for the OS.
+
+        Parameters:
+        ostree_remote_attributes (dic): dictionnary containing the name, the url and
+                                        whether the images are signed with GPG or not.
+
+        Returns:
+         - True if the initialization is successful
+         - False otherwise
+        """
         res = True
         self.ostree_remote_attributes = ostree_remote_attributes
         opts = GLib.Variant('a{sv}', {'gpg-verify':GLib.Variant('b', ostree_remote_attributes['gpg-verify'])})
@@ -143,8 +155,12 @@ class AsyncUpdater(object):
 
     def set_current_revision(self, container_name, rev):
         """
-        This method write rev into a json file containing the current working rev for the
+        This method writes rev into a json file containing the current working rev for the
         containers.
+
+        Parameters:
+        container_name (str): the name of the container
+        rev (str): the revision to write
         """
         try:
             with open(PATH_CURRENT_REVISIONS, "r") as f:
@@ -161,8 +177,12 @@ class AsyncUpdater(object):
         """
         This method returns the previous working revision of a notify container.
 
-        If the file is not found of the container name is not found in the file,
-        it will return None. This means this is the first installation of the container.
+        Parameters:
+        container_name (str): the name of the container
+
+        Returns:
+         - The rev sha for container_name
+         - None if the container isn't found
         """
         try:
             with open(PATH_CURRENT_REVISIONS, "r") as f:
@@ -172,6 +192,14 @@ class AsyncUpdater(object):
             return None
 
     def init_checkout_existing_containers(self):
+        """
+        This method checks out the containers installed on the target, and starts their
+        respective systemd service.
+
+        Returns:
+         - True if the containers are successfully initialized
+         - False otherwise
+        """
         res = True
         self.logger.info("Getting refs from repo:{}".format(PATH_REPO_APPS))
 
@@ -186,23 +214,26 @@ class AsyncUpdater(object):
                     break
                 self.create_and_start_unit(container_name)
         except (GLib.Error, Exception) as e:
-            self.logger.error("Error checking out containers repo:{}".format(e))
+            self.logger.error("Error checking out containers repo ({})".format(e))
             res = False
         return res
 
     def start_unit(self, container_name):
+        """This method starts the systemd unit for container_name."""
         self.logger.info("Enable the container {}".format(container_name))
         self.systemd.EnableUnitFiles([container_name + '.service'], False, False)
         self.logger.info("Since FILE_AUTOSTART is present, start the container using systemd")
         self.systemd.StartUnit(container_name + '.service', "replace")
 
     def stop_unit(self, container_name):
+        """This method stops the systemd unit for container_name."""
         self.logger.info("Since FILE_AUTOSTART is not present, stop the container using systemd")
         self.systemd.StopUnit(container_name + '.service', "replace")
         self.logger.info("Disable the container {}".format(container_name))
         self.systemd.DisableUnitFiles([container_name + '.service'], False)
 
     def create_and_start_unit(self, container_name):
+        """This method creates the unit for container_name, and starts it of AUTOSTART exists."""
         self.logger.info("Copy the service file to /etc/systemd/system/{}.service".format(container_name))
         shutil.copy(PATH_APPS + '/' + container_name + '/systemd.service', PATH_SYSTEMD_UNITS + container_name + '.service')
         if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
@@ -213,8 +244,8 @@ class AsyncUpdater(object):
         Wrapper method to pull a ref from an ostree remote.
 
         Parameters:
-        is_container (bool): set to True if you are pulling for a container,
-                             set to False for the OS
+        is_container (bool): set to True to pull a container image,
+                             set to False to pull an OS image
         ref_sha (str): the ref commit sha to pull
         ref_name (str): the ref name (can be the name of the container, if None, the OS
                         name will be set)
@@ -272,7 +303,13 @@ class AsyncUpdater(object):
             raise
 
     def update_container_ids(self, container_name):
+        """
+        By default, the container are checked out as root. This method sets the uid and
+        gid of all the container related files to 1000 (UID) and 1000 (GID).
 
+        Parameters:
+        container_name (str): the name of the container
+        """
         self.logger.info("Update the UID and GID of the rootfs")
         os.chown(PATH_APPS + '/' + container_name, CONTAINER_UID, CONTAINER_GID)
         for dirpath, dirnames, filenames in os.walk(PATH_APPS + '/' + container_name):
@@ -282,7 +319,16 @@ class AsyncUpdater(object):
                 os.lchown(os.path.join(dirpath, fname), CONTAINER_UID, CONTAINER_GID)
 
     def handle_unit(self, container_name, autostart, autoremove):
+        """
+        This method will handle the container execution or deletion based on the autostart
+        and autoremove arguments.
 
+        Parameters:
+        container_name (str): the name of the container
+        autostart (int): set to 1 if the container should be automatically started, 0
+                         otherwise
+        autoremove (int): if set to 1, the container's directory will be deleted
+        """
         if autoremove == 1:
             self.logger.info("Remove the directory: {}".format(PATH_APPS + '/' + container_name))
             shutil.rmtree(PATH_APPS + '/' + container_name)
@@ -301,7 +347,15 @@ class AsyncUpdater(object):
                         os.remove(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART)
 
     def checkout_container(self, container_name, rev_number):
+        """
+        This method checks out a container into its corresponding folder, to a given
+        commit revision.
+        Before that, it stops the container using systemd, if found.
 
+        Parameters:
+        container_name (str): the name of the container
+        rev_number (str): the commit revision
+        """
         service = self.systemd.ListUnitsByNames([container_name + '.service'])
         if (service[0][2] != 'not-found'):
             self.logger.info("Stop the container {}".format(container_name))
@@ -341,9 +395,7 @@ class AsyncUpdater(object):
             raise Exception("Checking out {} failed (returned False)")
 
     def ostree_stage_tree(self, rev_number):
-        """
-        Wrapper around sysroot.stage_tree().
-        """
+        """Wrapper around sysroot.stage_tree()."""
         try:
             booted_dep = self.sysroot.get_booted_deployment()
             if booted_dep is None:
