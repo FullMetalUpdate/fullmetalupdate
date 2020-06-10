@@ -5,6 +5,8 @@ import logging
 import traceback
 import gi, os
 import shutil
+import subprocess
+import json
 
 gi.require_version("OSTree", "1.0")
 from gi.repository import OSTree, GLib, Gio
@@ -14,6 +16,7 @@ PATH_APPS = '/apps'
 PATH_REPO_OS = '/ostree/repo/'
 PATH_REPO_APPS = PATH_APPS + '/ostree_repo'
 PATH_SYSTEMD_UNITS = '/etc/systemd/system/'
+PATH_CURRENT_REVISIONS = '/var/local/fullmetalupdate/current_revs.json'
 VALIDATE_CHECKOUT = 'CheckoutDone'
 FILE_AUTOSTART = 'auto.start'
 CONTAINER_UID = 1000
@@ -27,6 +30,8 @@ class DBUSException(Exception):
 class AsyncUpdater(object):
     def __init__(self):
         self.logger = logging.getLogger('fullmetalupdate_container_updater')
+
+        self.mark_os_successful()
 
         bus = SystemBus()
         self.systemd = bus.get('.systemd1')
@@ -46,6 +51,65 @@ class AsyncUpdater(object):
         else:
             self.logger.info("No preinstalled OSTree for containers, we create one")
             self.repo_containers.create(OSTree.RepoMode.BARE_USER_ONLY, None)
+
+    def mark_os_successful(self):
+        """
+        This method marks the currently running OS as successful by setting the init_var u-boot
+        environment variable to 1.
+        Returns :
+         - True if the variable was successfully set
+         - False otherwise
+        """
+        try:
+            mark_successful = subprocess.call(["fw_setenv", "success", "1"])
+
+            if mark_successful == 0:
+                self.logger.info("Setting success u-boot environment variable to 1 succeeded")
+            else:
+                self.logger.error("Setting success u-boot environment variable to 1 failed")
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error("Ostree rollback post-process commands failed ({})".format(str(e)))
+
+    def check_for_rollback(self, revision):
+        """
+        Function used to execute the different commands needed for the rollback to be
+        effective.
+        We check :
+         - if the booted deployment's revision matches the server's revision
+         - if so, check if there is a pending deployment (meaning we've rollbacked) and
+           undeploy it.
+        Returns :
+         - True when the system has rollbacked
+         - False otherwise
+        """
+        try:
+            has_rollbacked = False
+
+            # returns [pendings deployments, rollback deployments]
+            deployments = self.sysroot.query_deployments_for(None)
+
+            # the deployment we are booted on
+            booted_deployment_rev = self.sysroot.get_booted_deployment().get_csum()
+
+            if (booted_deployment_rev != revision):
+                has_rollbacked = True
+                self.logger.warning("The system rollbacked. Checking if we needed to undeploy")
+                if (deployments[0] is not None):
+                    self.logger.info("There is a pending deployment. Undeploying...")
+                    # 0 is the index of the pending deployment (if there is one)
+                    if subprocess.call(["ostree", "admin", "undeploy", "0"]) != 0:
+                        self.logger.error("Undeployment failed")
+                    else:
+                        self.logger.info("Undeployment successful")
+            else:
+                self.logger.info("No undeployment needed")
+
+            return has_rollbacked
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error("Ostree rollback post-process commands failed ({})".format(str(e)))
+            return False
 
     def init_ostree_remotes(self, ostree_remote_attributes):
         res = True
@@ -76,6 +140,36 @@ class AsyncUpdater(object):
    
         return res
 
+    def set_current_revision(self, container_name, rev):
+        """
+        This method write rev into a json file containing the current working rev for the
+        containers.
+        """
+        try:
+            with open(PATH_CURRENT_REVISIONS, "r") as f:
+                current_revs = json.load(f)
+            current_revs.update({container_name: rev})
+            with open(PATH_CURRENT_REVISIONS, "w") as f:
+                json.dump(current_revs, f, indent=4)
+        except FileNotFoundError:
+            with open(PATH_CURRENT_REVISIONS, "w") as f:
+                current_revs = {container_name: rev}
+                json.dump(current_revs, f, indent=4)
+
+    def get_previous_rev(self, container_name):
+        """
+        This method returns the previous working revision of a notify container.
+
+        If the file is not found of the container name is not found in the file,
+        it will return None. This means this is the first installation of the container.
+        """
+        try:
+            with open(PATH_CURRENT_REVISIONS, "r") as f:
+                current_revs = json.load(f)
+            return current_revs[container_name]
+        except (FileNotFoundError, KeyError):
+            return None
+
     def init_checkout_existing_containers(self):
         res = True
         self.logger.info("Getting refs from repo:{}".format(PATH_REPO_APPS))
@@ -85,15 +179,12 @@ class AsyncUpdater(object):
             for ref in refs:
                 container_name = ref.split(':')[1]
                 if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + VALIDATE_CHECKOUT):
-                    res = self.checkout_container(container_name, None)
+                    self.checkout_container(container_name, None)
                 if not res:
                     self.logger.error("Error when checking out container:{}".format(container_name))
                     break
-                res = self.create_and_start_unit(container_name)
-                if not res:
-                    self.logger.error("Error when enablig/starting the systemd unit for container:{}".format(container_name))
-                    break
-        except GLib.Error as e:
+                self.create_and_start_unit(container_name)
+        except (GLib.Error, Exception) as e:
             self.logger.error("Error checking out containers repo:{}".format(e))
             res = False
         return res
@@ -102,43 +193,61 @@ class AsyncUpdater(object):
         self.logger.info("Enable the container {}".format(container_name))
         self.systemd.EnableUnitFiles([container_name + '.service'], False, False)
         self.logger.info("Since FILE_AUTOSTART is present, start the container using systemd")
-        self.systemd.StartUnit(container_name + '.service', "fail")
+        self.systemd.StartUnit(container_name + '.service', "replace")
 
     def stop_unit(self, container_name):
         self.logger.info("Since FILE_AUTOSTART is not present, stop the container using systemd")
-        self.systemd.StopUnit(container_name + '.service', "fail")
+        self.systemd.StopUnit(container_name + '.service', "replace")
         self.logger.info("Disable the container {}".format(container_name))
         self.systemd.DisableUnitFiles([container_name + '.service'], False)
-        
+
     def create_and_start_unit(self, container_name):
+        self.logger.info("Copy the service file to /etc/systemd/system/{}.service".format(container_name))
+        shutil.copy(PATH_APPS + '/' + container_name + '/systemd.service', PATH_SYSTEMD_UNITS + container_name + '.service')
+        if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
+            self.start_unit(container_name)
+
+    def pull_ostree_ref(self, is_container, ref_name, ref_sha):
+        """
+        Wrapper method to pull a ref from an ostree remote.
+
+        Parameters:
+        is_container (bool): set to True if you are pulling for a container,
+                             set to False for the OS
+        ref_name (str): the ref name (can be the name of the container or the OS name)
+        ref_sha (str): the ref commit sha to pull
+        """
         res = True
+        repo = self.repo_containers if is_container else self.repo_os
         try:
-            self.logger.info("Copy the service file to /etc/systemd/system/{}.service".format(container_name))
-            shutil.copy(PATH_APPS + '/' + container_name + '/systemd.service', PATH_SYSTEMD_UNITS + container_name + '.service')
-            if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
-                self.start_unit(container_name)
+            progress = OSTree.AsyncProgress.new()
+            progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
+
+            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE),
+                                          'refs': GLib.Variant('as', (ref_sha,)),
+                                          'depth': GLib.Variant('i', OSTREE_DEPTH)})
+            self.logger.info("Pulling remote {} from OSTree repo".format(ref_name))
+            res = repo.pull_with_options(ref_name, opts, progress, None)
+            progress.finish()
         except GLib.Error as e:
-            self.logger.error("Error starting unit {} :{}".format(container_name, e))
-            res = False
-        return res
+            self.logger.error("Pulling {} from OSTree repo failed ({})".format(ref_name, str(e)))
+            raise
+        if not res:
+            raise Exception("Pulling {} failed (returned False)".format(ref_name))
 
-    def update_container(self, container_name, rev_number, autostart, autoremove):
+    def init_container_remote(self, container_name):
         """
-        Update the given container. To do so, it checks the container status (active, loaded, etc...)
-        If necessary, container is stopped. Files are checked out to the installation folder.
-        And container is started again.
+        If the container does not exist, initialize its remote.
+
+        Parameters:
+        container_name (str): name of the container
         """
-        # if a container is named 'container-hello-world', its service will be 'container-hello-world.service'
-        service_name = None
-        for unit in self.systemd.ListUnits():
-            # full unit : ('container-hello-world.service', 'container-hello-world-imx6qdlsabresd container service', 'loaded', 'failed', 'failed', '', '/org/freedesktop/systemd1/unit/wtk_2dnodejs_2ddemo_2eservice', 0, '', '/')
-            if unit[0].replace('.service', '') in container_name:
-                self.logger.debug("Service found!")
-                service_name = unit[0]
-                break
+
+        # returns [('container-hello-world.service', 'description', 'loaded', 'failed', 'failed', '', '/org/freedesktop/systemd1/unit/wtk_2dnodejs_2ddemo_2eservice', 0, '', '/')]
+        service = self.systemd.ListUnitsByNames([container_name + '.service'])
 
         try:
-            if service_name is None:
+            if (service[0][2] == 'not-found'):
                 # New service added, we need to connect to its remote
                 opts = GLib.Variant('a{sv}', {'gpg-verify':GLib.Variant('b', self.ostree_remote_attributes['gpg-verify'])})
                 # Check if this container was not installed previously
@@ -149,59 +258,46 @@ class AsyncUpdater(object):
                                 opts, None)
                 else:
                     self.logger.info("New container {} added to the target but the remote already exists, we do nothing".format(container_name))
-
-
-            progress = OSTree.AsyncProgress.new()
-            progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
-
-            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE), 
-                                          'refs': GLib.Variant('as', (rev_number,)),
-                                          'depth': GLib.Variant('i', OSTREE_DEPTH)})
-            self.logger.info("Pulling remote {} from OSTree repo, branch ({})".format(container_name, container_name))
-            res = self.repo_containers.pull_with_options(container_name, opts, progress, None)
-            progress.finish()
         except GLib.Error as e:
-            self.logger.error("Pulling {} from OSTree repo failed ({})".format(container_name, str(e)))
-            res = False
+            self.logger.error("Initializing {} remote failed ({})".format(container_name, str(e)))
+            raise
+
+    def update_container_ids(self, container_name):
+
+        self.logger.info("Update the UID and GID of the rootfs")
+        os.chown(PATH_APPS + '/' + container_name, CONTAINER_UID, CONTAINER_GID)
+        for dirpath, dirnames, filenames in os.walk(PATH_APPS + '/' + container_name):
+            for dname in dirnames:
+                os.lchown(os.path.join(dirpath, dname), CONTAINER_UID, CONTAINER_GID)
+            for fname in filenames:
+                os.lchown(os.path.join(dirpath, fname), CONTAINER_UID, CONTAINER_GID)
+
+    def handle_unit(self, container_name, autostart, autoremove):
+
+        if autoremove == 1:
+            self.logger.info("Remove the directory: {}".format(PATH_APPS + '/' + container_name))
+            shutil.rmtree(PATH_APPS + '/' + container_name)
         else:
-            if not service_name is None:
-                self.logger.info("Stop the container {}".format(container_name))
-                self.stop_unit(container_name)
-
-            self.logger.info("Checking out the new container {} rev {}".format(container_name, rev_number))
-            res = self.checkout_container(container_name, rev_number)
-
-            self.logger.info("Update the UID and GID of the rootfs")
-            os.chown(PATH_APPS + '/' + container_name, CONTAINER_UID, CONTAINER_GID)
-            for dirpath, dirnames, filenames in os.walk(PATH_APPS + '/' + container_name):
-                for dname in dirnames:
-                    os.lchown(os.path.join(dirpath, dname), CONTAINER_UID, CONTAINER_GID)
-                for fname in filenames:
-                    os.lchown(os.path.join(dirpath, fname), CONTAINER_UID, CONTAINER_GID)
-
-            if not res:
-                self.logger.error("Checking out container {} Failed!".format(container_name))
+            service = self.systemd.ListUnitsByNames([container_name + '.service'])
+            if service[0][2] == 'not-found':
+                self.logger.info("First installation of the container {} on the system, we create and start the service".format(container_name))
+                self.create_and_start_unit(container_name)
             else:
-                if autoremove == 1:
-                    self.logger.info("Remove the directory: {}".format(PATH_APPS + '/' + container_name))
-                    shutil.rmtree(PATH_APPS + '/' + container_name)
-                    res = True
+                if autostart == 1:
+                    if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
+                        open(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART, 'a').close()
+                    self.start_unit(container_name)
                 else:
-                    if service_name is None:
-                        self.logger.info("First installation of the container {} on the system, we create and start the service".format(container_name))
-                        res = self.create_and_start_unit(container_name)
-                    else:
-                        if autostart == 1:
-                            if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
-                                open(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART, 'a').close()
-                            self.start_unit(container_name)
-                        else:
-                            if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
-                                os.remove(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART)
-                        res= True
-        return res
+                    if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
+                        os.remove(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART)
 
     def checkout_container(self, container_name, rev_number):
+
+        service = self.systemd.ListUnitsByNames([container_name + '.service'])
+        if (service[0][2] != 'not-found'):
+            self.logger.info("Stop the container {}".format(container_name))
+            self.stop_unit(container_name)
+
         res = True
         rootfs_fd = None
         try:
@@ -229,10 +325,11 @@ class AsyncUpdater(object):
 
         except GLib.Error as e:
             self.logger.error("Checking out {} failed ({})".format(container_name, str(e)))
-            res = False
+            raise
         if rootfs_fd != None:
             os.close(rootfs_fd)
-        return res
+        if not res:
+            raise Exception("Checking out {} failed (returned False)")
 
     def update_system(self, rev_number):
         """
@@ -267,14 +364,18 @@ class AsyncUpdater(object):
             self.logger.info("Write the new deployment")
 
             if res:
-                self.logger.info("Deployed")
-                if res is True:
-                    self.logger.warning("Deploying {}: operation succeed (modifications will be taken into account after reboot".format(self.remote_name_os))
+                self.logger.warning("Deploying {}: operation succeed (modifications will be taken into account after reboot".format(self.remote_name_os))
+
+                self.logger.info("Deleting init_var u-boot environment variable")
+                if subprocess.call(["fw_setenv", "init_var"]) != 0:
+                    self.logger.error("Deleting init_var variable from u-boot environment failed")
                 else:
-                    self.logger.error("Deploying {}: operation FAILED".format(self.remote_name_os))
+                    self.logger.info("Deleting init_var variable from u-boot environment succeeded")
+            else:
+                self.logger.error("Deploying {}: operation FAILED".format(self.remote_name_os))
 
             return res
 
-        except GLib.Error as e:
+        except (GLib.Error, subprocess.CalledProcessError) as e:
             self.logger.error("Update System {} from OSTree repo failed ({})".format(self.remote_name_os, str(e)))
             return False
