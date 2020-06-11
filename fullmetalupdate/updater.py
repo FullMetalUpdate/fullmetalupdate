@@ -209,6 +209,7 @@ class AsyncUpdater(object):
                 container_name = ref.split(':')[1]
                 if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + VALIDATE_CHECKOUT):
                     self.checkout_container(container_name, None)
+                    self.update_container_ids(container_name)
                 if not res:
                     self.logger.error("Error when checking out container:{}".format(container_name))
                     break
