@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
-import subprocess
-import asyncio
-from aiohttp.client_exceptions import ClientOSError, ClientResponseError
-import gi
-gi.require_version('OSTree', '1.0')
-from gi.repository import GLib, Gio, OSTree
+
 from datetime import datetime, timedelta
 import os
 import os.path
@@ -13,6 +8,9 @@ import logging
 import json
 import threading
 import socket as s
+import subprocess
+import asyncio
+import gi
 
 from fullmetalupdate.updater import AsyncUpdater
 from rauc_hawkbit.ddi.client import DDIClient, APIError
@@ -22,9 +20,12 @@ from rauc_hawkbit.ddi.deployment_base import (
     DeploymentStatusExecution, DeploymentStatusResult)
 from rauc_hawkbit.ddi.cancel_action import (
     CancelStatusExecution, CancelStatusResult)
+from aiohttp.client_exceptions import ClientOSError, ClientResponseError
+gi.require_version('OSTree', '1.0')
+from gi.repository import GLib, Gio, OSTree
 
 PATH_REBOOT_DATA = '/var/local/fullmetalupdate/reboot_data.json'
-PATH_NOTIFY_SOCKET = "/tmp/fullmetalupdate/fullmetalupdate_notify.sock"
+PATH_NOTIFY_SOCKET = '/tmp/fullmetalupdate/fullmetalupdate_notify.sock'
 
 
 class FullMetalUpdateDDIClient(AsyncUpdater):
@@ -61,7 +62,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             except (APIError, TimeoutError, ClientOSError, ClientResponseError) as e:
                 # log error and start all over again
                 self.logger.warning('Polling failed with a temporary error: {}'.format(e))
-            except:
+            except Exception:
                 self.logger.exception('Polling failed with an unexpected exception:')
             self.action_id = None
             self.logger.info('Retry will happen in {} seconds'.format(
@@ -72,9 +73,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         """Identify target against HawkBit."""
         self.logger.info('Sending identifying information to HawkBit')
         # identify
-        await self.ddi.configData(
-                ConfigStatusExecution.closed,
-                ConfigStatusResult.success, **self.attributes)
+        await self.ddi.configData(ConfigStatusExecution.closed,
+                                  ConfigStatusResult.success, **self.attributes)
 
     async def cancel(self, base):
         self.logger.info('Received cancelation request')
@@ -88,7 +88,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         # Reject cancel request
         self.logger.info('Rejecting cancelation request')
         await self.ddi.cancelAction[stop_id].feedback(
-                CancelStatusExecution.rejected, CancelStatusResult.success, status_details=("Cancelling not supported",))
+            CancelStatusExecution.rejected,
+            CancelStatusResult.success,
+            status_details=("Cancelling not supported",))
 
     async def install(self):
         if self.lock_keeper and not self.lock_keeper.lock(self):
@@ -121,7 +123,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             status_execution = DeploymentStatusExecution.closed
             status_result = DeploymentStatusResult.failure
             await self.ddi.deploymentBase[action_id].feedback(
-                    status_execution, status_result, [msg])
+                status_execution, status_result, [msg])
             raise APIError(msg)
         else:
             msg = "FullMetalUpdate:Proceeding"
@@ -129,8 +131,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             status_execution = DeploymentStatusExecution.proceeding
             status_result = DeploymentStatusResult.none
             await self.ddi.deploymentBase[action_id].feedback(
-                    status_execution, status_result, [msg],
-                    percentage=percentage)
+                status_execution, status_result, [msg],
+                percentage=percentage)
 
         self.action_id = action_id
         rev = None
@@ -140,6 +142,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         timeout = None
 
         for chunk in deploy_info['deployment']['chunks']:
+            # parse the metadata included in the update
             for meta in chunk['metadata']:
                 if meta['key'] == 'rev':
                     rev = meta['value']
@@ -160,9 +163,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 [feedback, reboot_data] = self.feedback_for_os_deployment(rev)
                 if feedback:
                     await self.ddi.deploymentBase[reboot_data["action_id"]].feedback(
-                                DeploymentStatusExecution(reboot_data["status_execution"]),
-                                DeploymentStatusResult(reboot_data["status_result"]),
-                                [reboot_data["msg"]])
+                        DeploymentStatusExecution(reboot_data["status_execution"]),
+                        DeploymentStatusResult(reboot_data["status_result"]),
+                        [reboot_data["msg"]])
                     self.action_id = None
                     return
 
@@ -170,14 +173,14 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 res = self.update_system(rev)
                 status_execution = DeploymentStatusExecution.closed
                 if not res:
-                    self.logger.error("OS {} v.{} Deployment failed".format(chunk['name'], chunk['version']))
                     msg = "OS {} v.{} Deployment failed".format(chunk['name'], chunk['version'])
+                    self.logger.error(msg)
                     status_result = DeploymentStatusResult.failure
                     await self.ddi.deploymentBase[self.action_id].feedback(
                         status_execution, status_result, [msg])
                 else:
-                    self.logger.info("OS {} v.{} Deployment succeed".format(chunk['name'], chunk['version']))
                     msg = "OS {} v.{} Deployment succeed".format(chunk['name'], chunk['version'])
+                    self.logger.info(msg)
                     status_result = DeploymentStatusResult.success
                     reboot_needed = True
                     self.write_reboot_data(self.action_id,
@@ -198,21 +201,22 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 status_execution = DeploymentStatusExecution.closed
 
                 if not res:
-                    self.logger.error("App {} v.{} Deployment failed".format(chunk['name'], chunk['version']))
                     msg = "App {} v.{} Deployment failed".format(chunk['name'], chunk['version'])
+                    self.logger.error(msg)
                     status_result = DeploymentStatusResult.failure
                     await self.ddi.deploymentBase[self.action_id].feedback(
                         status_execution, status_result, [msg])
                     self.action_id = None
+                # sending positive feedback only is the container isn't a notify container
                 elif notify != 1:
-                    self.logger.info("App {} v.{} Deployment succeed".format(chunk['name'], chunk['version']))
                     msg = "App {} v.{} Deployment succeed".format(chunk['name'], chunk['version'])
+                    self.logger.info(msg)
                     status_result = DeploymentStatusResult.success
                     await self.ddi.deploymentBase[self.action_id].feedback(
                         status_execution, status_result, [msg])
                     self.action_id = None
 
-        if reboot_needed :
+        if reboot_needed:
             try:
                 subprocess.run("reboot")
             except subprocess.CalledProcessError as e:
@@ -297,7 +301,6 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         except IOError as e:
             self.logger.error("Writing reboot data failed ({})".format(e))
 
-
     def feedback_for_os_deployment(self, revision):
         """
         This method will generate a feedback message for the Hawkbit server and
@@ -347,12 +350,12 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
         container_feedbackd = threading.Thread(
             target=self.container_feedbacker,
-            args = (asyncio.get_event_loop(),
-                    sock,
-                    container_name,
-                    rev,
-                    autostart,
-                    autoremove),
+            args=(asyncio.get_event_loop(),
+                  sock,
+                  container_name,
+                  rev,
+                  autostart,
+                  autoremove),
             name="container-feedback")
         container_feedbackd.start()
 
@@ -383,20 +386,21 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
         try:
             socket.listen(1)
-            conn, addr = socket.accept()
+            [conn, _] = socket.accept()
             datagram = conn.recv(1024)
 
             if datagram:
                 systemd_info = datagram.strip().decode("utf-8").split()
                 self.logger.debug("Datagram received : {}".format(systemd_info))
-                if (systemd_info[0] == 'success'):
+                if systemd_info[0] == 'success':
                     # feedback the server positively
                     msg = "The notify container started successfully"
                     status_result = DeploymentStatusResult.success
                     status_execution = DeploymentStatusExecution.closed
                     self.logger.info(msg)
-                    asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
-                        status_execution, status_result, [msg]), event_loop)
+                    asyncio.run_coroutine_threadsafe(
+                        self.ddi.deploymentBase[self.action_id].feedback(
+                            status_execution, status_result, [msg]), event_loop)
                     # Write this new revision for future updates
                     self.set_current_revision(container_name, rev_number)
                 else:
@@ -414,7 +418,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     self.logger.info(msg)
                     asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
                         status_execution, status_result, [msg]), event_loop)
-        except s.timeout as e:
+        except s.timeout:
             # socket timeout, try to rollback if possible
             status_result = DeploymentStatusResult.failure
             status_execution = DeploymentStatusExecution.closed
@@ -423,8 +427,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             end_msg = self.rollback_container(container_name,
                                               autostart,
                                               autoremove)
-            asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[self.action_id].feedback(
-                status_execution, status_result, [msg + end_msg]), event_loop)
+            asyncio.run_coroutine_threadsafe(
+                self.ddi.deploymentBase[self.action_id].feedback(
+                    status_execution, status_result, [msg + end_msg]), event_loop)
 
         socket.close()
         self.logger.info("Removing socket {}".format(PATH_NOTIFY_SOCKET))

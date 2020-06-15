@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import asyncio
-import aiohttp
 from configparser import ConfigParser
 from pathlib import Path
-import os
 import logging
 import argparse
-
-from fullmetalupdate.fullmetalupdate_ddi_client import FullMetalUpdateDDIClient
+import asyncio
+import aiohttp
 from distutils.util import strtobool
+from fullmetalupdate.fullmetalupdate_ddi_client import FullMetalUpdateDDIClient
+
 
 async def main():
     # config parsing
@@ -50,10 +49,10 @@ async def main():
             'error': logging.ERROR,
             'fatal': logging.FATAL,
         }[config.get('client', 'log_level').lower()]
-    except:
+    except Exception:
         LOG_LEVEL = logging.INFO
 
-    if strtobool(config.get('client', 'hawkbit_ssl')) == True:
+    if strtobool(config.get('client', 'hawkbit_ssl')):
         url_type = 'https://'
     else:
         url_type = 'http://'
@@ -67,8 +66,7 @@ async def main():
     AUTH_TOKEN = config.get('client', 'hawkbit_auth_token')
     ATTRIBUTES = {'FullMetalUpdate': config.get('client', 'hawkbit_target_name')}
 
-
-    if strtobool(config.get('ostree', 'ostree_ssl')) == True:
+    if strtobool(config.get('ostree', 'ostree_ssl')):
         url_type = 'https://'
     else:
         url_type = 'http://'
@@ -76,8 +74,8 @@ async def main():
     local_domain_name = config.get('server', 'server_host_name')
 
     OSTREE_REMOTE_ATTRIBUTES = {'name': config.get('ostree', 'ostree_name_remote'),
-            'gpg-verify': strtobool(config.get('ostree', 'ostree_gpg-verify')),
-            'url': url_type + local_domain_name + ":" + config.get('ostree', 'ostree_url_port')}
+                                'gpg-verify': strtobool(config.get('ostree', 'ostree_gpg-verify')),
+                                'url': url_type + local_domain_name + ":" + config.get('ostree', 'ostree_url_port')}
 
     if args.debug:
         LOG_LEVEL = logging.DEBUG

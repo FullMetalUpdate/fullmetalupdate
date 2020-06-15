@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 
-import asyncio
 import logging
-import traceback
-import gi, os
+import os
 import shutil
 import subprocess
 import json
+import gi
 
 gi.require_version("OSTree", "1.0")
 from gi.repository import OSTree, GLib, Gio
@@ -23,12 +22,16 @@ CONTAINER_UID = 1000
 CONTAINER_GID = 1000
 OSTREE_DEPTH = 1
 
+
 class DBUSException(Exception):
     pass
 
 
 class AsyncUpdater(object):
     def __init__(self):
+
+        self.ostree_remote_attributes = None
+
         self.logger = logging.getLogger('fullmetalupdate_container_updater')
 
         self.mark_os_successful()
@@ -41,7 +44,7 @@ class AsyncUpdater(object):
         self.logger.info("Cleaning the sysroot")
         self.sysroot.cleanup(None)
 
-        [res,repo] = self.sysroot.get_repo()
+        [_, repo] = self.sysroot.get_repo()
         self.repo_os = repo
 
         self.remote_name_os = None
@@ -50,22 +53,21 @@ class AsyncUpdater(object):
             self.logger.info("Preinstalled OSTree for containers, we use it")
             self.repo_containers.open(None)
         else:
-            self.logger.info("No preinstalled OSTree for containers, we create one")
+            self.logger.info("No preinstalled OSTree for containers, we create "
+                             "one")
             self.repo_containers.create(OSTree.RepoMode.BARE_USER_ONLY, None)
 
     def mark_os_successful(self):
         """
-        This method marks the currently running OS as successful by setting the init_var u-boot
-        environment variable to 1.
+        This method marks the currently running OS as successful by setting the
+        init_var u-boot environment variable to 1.
 
         Returns :
          - True if the variable was successfully set
          - False otherwise
         """
         try:
-            mark_successful = subprocess.call(["fw_setenv", "success", "1"])
-
-            if mark_successful == 0:
+            if subprocess.call(["fw_setenv", "success", "1"]) == 0:
                 self.logger.info("Setting success u-boot environment variable to 1 succeeded")
             else:
                 self.logger.error("Setting success u-boot environment variable to 1 failed")
@@ -94,10 +96,10 @@ class AsyncUpdater(object):
             # the deployment we are booted on
             booted_deployment_rev = self.sysroot.get_booted_deployment().get_csum()
 
-            if (booted_deployment_rev != revision):
+            if booted_deployment_rev != revision:
                 has_rollbacked = True
                 self.logger.warning("The system rollbacked. Checking if we needed to undeploy")
-                if (deployments[0] is not None):
+                if deployments[0] is not None:
                     self.logger.info("There is a pending deployment. Undeploying...")
                     # 0 is the index of the pending deployment (if there is one)
                     if subprocess.call(["ostree", "admin", "undeploy", "0"]) != 0:
@@ -127,30 +129,30 @@ class AsyncUpdater(object):
         """
         res = True
         self.ostree_remote_attributes = ostree_remote_attributes
-        opts = GLib.Variant('a{sv}', {'gpg-verify':GLib.Variant('b', ostree_remote_attributes['gpg-verify'])})
+        opts = GLib.Variant('a{sv}', {'gpg-verify': GLib.Variant('b', ostree_remote_attributes['gpg-verify'])})
         try:
             self.logger.info("Initalize remotes for the OS ostree: {}".format(ostree_remote_attributes['name']))
             if not ostree_remote_attributes['name'] in self.repo_os.remote_list():
                 self.repo_os.remote_add(ostree_remote_attributes['name'],
-                                ostree_remote_attributes['url'],
-                                opts, None)
-            self.remote_name_os = ostree_remote_attributes['name'] 
+                                        ostree_remote_attributes['url'],
+                                        opts, None)
+            self.remote_name_os = ostree_remote_attributes['name']
 
-            [_,refs] = self.repo_containers.list_refs(None, None)
+            [_, refs] = self.repo_containers.list_refs(None, None)
 
             self.logger.info("Initalize remotes for the containers ostree: {}".format(refs))
             for ref in refs:
-                remote_name = ref.split(':')[0]          
-                if not remote_name in self.repo_containers.remote_list():
+                remote_name = ref.split(':')[0]
+                if remote_name not in self.repo_containers.remote_list():
                     self.logger.info("We had the remote: {}".format(remote_name))
                     self.repo_containers.remote_add(remote_name,
-                                ostree_remote_attributes['url'],
-                                opts, None)
+                                                    ostree_remote_attributes['url'],
+                                                    opts, None)
 
         except GLib.Error as e:
             self.logger.error("OSTRee remote initialization failed ({})".format(str(e)))
             res = False
-   
+
         return res
 
     def set_current_revision(self, container_name, rev):
@@ -204,7 +206,7 @@ class AsyncUpdater(object):
         self.logger.info("Getting refs from repo:{}".format(PATH_REPO_APPS))
 
         try:
-            [_,refs] = self.repo_containers.list_refs(None, None)
+            [_, refs] = self.repo_containers.list_refs(None, None)
             for ref in refs:
                 container_name = ref.split(':')[1]
                 if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + VALIDATE_CHECKOUT):
@@ -236,7 +238,8 @@ class AsyncUpdater(object):
     def create_and_start_unit(self, container_name):
         """This method creates the unit for container_name, and starts it of AUTOSTART exists."""
         self.logger.info("Copy the service file to /etc/systemd/system/{}.service".format(container_name))
-        shutil.copy(PATH_APPS + '/' + container_name + '/systemd.service', PATH_SYSTEMD_UNITS + container_name + '.service')
+        shutil.copy(PATH_APPS + '/' + container_name + '/systemd.service',
+                    PATH_SYSTEMD_UNITS + container_name + '.service')
         if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
             self.start_unit(container_name)
 
@@ -263,7 +266,7 @@ class AsyncUpdater(object):
             progress = OSTree.AsyncProgress.new()
             progress.connect('changed', OSTree.Repo.pull_default_console_progress_changed, None)
 
-            opts = GLib.Variant('a{sv}', {'flags':GLib.Variant('i', OSTree.RepoPullFlags.NONE),
+            opts = GLib.Variant('a{sv}', {'flags': GLib.Variant('i', OSTree.RepoPullFlags.NONE),
                                           'refs': GLib.Variant('as', (ref_sha,)),
                                           'depth': GLib.Variant('i', OSTREE_DEPTH)})
             self.logger.info("Pulling remote {} from OSTree repo ({})".format(ref_name, ref_sha))
@@ -290,15 +293,18 @@ class AsyncUpdater(object):
         try:
             if (service[0][2] == 'not-found'):
                 # New service added, we need to connect to its remote
-                opts = GLib.Variant('a{sv}', {'gpg-verify':GLib.Variant('b', self.ostree_remote_attributes['gpg-verify'])})
+                opts = GLib.Variant('a{sv}',
+                                    {'gpg-verify': GLib.Variant('b', self.ostree_remote_attributes['gpg-verify'])})
                 # Check if this container was not installed previously
-                if not container_name in self.repo_containers.remote_list():
-                    self.logger.info("New container added to the target, we install the remote: {}".format(container_name))
+                if container_name not in self.repo_containers.remote_list():
+                    self.logger.info("New container added to the target, "
+                                     "we install the remote: {}".format(container_name))
                     self.repo_containers.remote_add(container_name,
-                                self.ostree_remote_attributes['url'],
-                                opts, None)
+                                                    self.ostree_remote_attributes['url'],
+                                                    opts, None)
                 else:
-                    self.logger.info("New container {} added to the target but the remote already exists, we do nothing".format(container_name))
+                    self.logger.info("New container {} added to the target but the remote "
+                                     "already exists, we do nothing".format(container_name))
         except GLib.Error as e:
             self.logger.error("Initializing {} remote failed ({})".format(container_name, str(e)))
             raise
@@ -336,7 +342,8 @@ class AsyncUpdater(object):
         else:
             service = self.systemd.ListUnitsByNames([container_name + '.service'])
             if service[0][2] == 'not-found':
-                self.logger.info("First installation of the container {} on the system, we create and start the service".format(container_name))
+                self.logger.info("First installation of the container {} on the "
+                                 "system, we create and start the service".format(container_name))
                 self.create_and_start_unit(container_name)
             else:
                 if autostart == 1:
@@ -358,7 +365,7 @@ class AsyncUpdater(object):
         rev_number (str): the commit revision
         """
         service = self.systemd.ListUnitsByNames([container_name + '.service'])
-        if (service[0][2] != 'not-found'):
+        if service[0][2] != 'not-found':
             self.logger.info("Stop the container {}".format(container_name))
             self.stop_unit(container_name)
 
@@ -374,7 +381,7 @@ class AsyncUpdater(object):
 
             self.logger.info("Getting rev from repo:{}".format(container_name + ':' + container_name))
 
-            if rev_number == None:
+            if rev_number is None:
                 rev = self.repo_containers.resolve_rev(container_name + ':' + container_name, False)[1]
             else:
                 rev = rev_number
@@ -390,7 +397,7 @@ class AsyncUpdater(object):
         except GLib.Error as e:
             self.logger.error("Checking out {} failed ({})".format(container_name, str(e)))
             raise
-        if rootfs_fd != None:
+        if rootfs_fd is not None:
             os.close(rootfs_fd)
         if not res:
             raise Exception("Checking out {} failed (returned False)")
