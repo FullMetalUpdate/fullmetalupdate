@@ -52,11 +52,6 @@ async def main():
     except Exception:
         LOG_LEVEL = logging.INFO
 
-    if strtobool(config.get('client', 'hawkbit_ssl')):
-        url_type = 'https://'
-    else:
-        url_type = 'http://'
-
     local_domain_name = config.get('server', 'server_host_name')
 
     HOST = local_domain_name + ":" + config.get('client', 'hawkbit_url_port')
@@ -70,8 +65,6 @@ async def main():
         url_type = 'https://'
     else:
         url_type = 'http://'
-
-    local_domain_name = config.get('server', 'server_host_name')
 
     OSTREE_REMOTE_ATTRIBUTES = {'name': config.get('ostree', 'ostree_name_remote'),
                                 'gpg-verify': strtobool(config.get('ostree', 'ostree_gpg-verify')),
