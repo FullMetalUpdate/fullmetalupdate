@@ -69,7 +69,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 wait_on_error))
             await asyncio.sleep(wait_on_error)
 
-    async def identify(self, base):
+    async def identify(self):
         """Identify target against HawkBit."""
         self.logger.info('Sending identifying information to HawkBit')
         # identify
@@ -237,7 +237,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
             if '_links' in base:
                 if 'configData' in base['_links']:
-                    await self.identify(base)
+                    await self.identify()
                 if 'deploymentBase' in base['_links']:
                     await self.process_deployment(base)
                 if 'cancelAction' in base['_links']:
