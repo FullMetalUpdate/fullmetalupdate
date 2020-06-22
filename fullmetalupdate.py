@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import asyncio
-import aiohttp
 from configparser import ConfigParser
 from pathlib import Path
-import os
 import logging
 import argparse
-
-from fullmetalupdate.fullmetalupdate_ddi_client import FullMetalUpdateDDIClient
+import asyncio
+import aiohttp
 from distutils.util import strtobool
+from fullmetalupdate.fullmetalupdate_ddi_client import FullMetalUpdateDDIClient
 
-def result_callback(result):
-    print("Result:   {}".format('SUCCESSFUL' if result == 0 else 'FAILED' ))
-
-def step_callback(percentage, message):
-    print("Progress: {:>3}% - {}".format(percentage, message))
 
 async def main():
     # config parsing
@@ -56,13 +49,8 @@ async def main():
             'error': logging.ERROR,
             'fatal': logging.FATAL,
         }[config.get('client', 'log_level').lower()]
-    except:
+    except Exception:
         LOG_LEVEL = logging.INFO
-
-    if strtobool(config.get('client', 'hawkbit_ssl')) == True:
-        url_type = 'https://'
-    else:
-        url_type = 'http://'
 
     local_domain_name = config.get('server', 'server_host_name')
 
@@ -73,17 +61,14 @@ async def main():
     AUTH_TOKEN = config.get('client', 'hawkbit_auth_token')
     ATTRIBUTES = {'FullMetalUpdate': config.get('client', 'hawkbit_target_name')}
 
-
-    if strtobool(config.get('ostree', 'ostree_ssl')) == True:
+    if strtobool(config.get('ostree', 'ostree_ssl')):
         url_type = 'https://'
     else:
         url_type = 'http://'
 
-    local_domain_name = config.get('server', 'server_host_name')
-
     OSTREE_REMOTE_ATTRIBUTES = {'name': config.get('ostree', 'ostree_name_remote'),
-            'gpg-verify': strtobool(config.get('ostree', 'ostree_gpg-verify')),
-            'url': url_type + local_domain_name + ":" + config.get('ostree', 'ostree_url_port')}
+                                'gpg-verify': strtobool(config.get('ostree', 'ostree_gpg-verify')),
+                                'url': url_type + local_domain_name + ":" + config.get('ostree', 'ostree_url_port')}
 
     if args.debug:
         LOG_LEVEL = logging.DEBUG
@@ -94,8 +79,7 @@ async def main():
 
     async with aiohttp.ClientSession() as session:
         client = FullMetalUpdateDDIClient(session, HOST, SSL, TENANT_ID, TARGET_NAME,
-                                          AUTH_TOKEN, ATTRIBUTES,
-                                          result_callback, step_callback)
+                                          AUTH_TOKEN, ATTRIBUTES)
 
         if not client.init_checkout_existing_containers():
             client.logger.info("There is no containers pre-installed on the target")
