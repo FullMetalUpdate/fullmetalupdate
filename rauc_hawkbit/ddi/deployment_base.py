@@ -30,7 +30,7 @@ class DeploymentBaseAction(object):
 
     async def __call__(self, resource=None):
         return await self.ddi.get_resource(
-            '/{tenant}/controller/v1/{controllerId}/deploymentBase/{actionId}', {'c': resource}, actionId=self.action_id)
+            '{tenant}/controller/v1/{controllerId}/deploymentBase/{actionId}', {'c': resource}, actionId=self.action_id)
 
     async def feedback(self, status_execution, status_result,
                        status_details=(), **kwstatus_result_progress):
@@ -60,7 +60,7 @@ class DeploymentBaseAction(object):
         }
 
         return await self.ddi.post_resource(
-            '/{tenant}/controller/v1/{controllerId}/deploymentBase/{actionId}/feedback', post_data, actionId=self.action_id)
+            '{tenant}/controller/v1/{controllerId}/deploymentBase/{actionId}/feedback', post_data, actionId=self.action_id)
 
 
 class DeploymentBase(object):

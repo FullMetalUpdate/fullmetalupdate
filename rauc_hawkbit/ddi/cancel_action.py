@@ -28,7 +28,7 @@ class Action(object):
         See http://sp.apps.bosch-iot-cloud.com/documentation/rest-api/rootcontroller-api-guide.html#_get_tenant_controller_v1_targetid_cancelaction_actionid # noqa
         """
         return await self.ddi.get_resource(
-            '/{tenant}/controller/v1/{controllerId}/cancelAction/{actionId}', actionId=self.action_id)
+            '{tenant}/controller/v1/{controllerId}/cancelAction/{actionId}', actionId=self.action_id)
 
     async def feedback(self, status_execution, status_result,
                        status_details=()):
@@ -57,7 +57,7 @@ class Action(object):
         }
 
         return await self.ddi.post_resource(
-            '/{tenant}/controller/v1/{controllerId}/cancelAction/{actionId}/feedback', post_data, actionId=self.action_id)
+            '{tenant}/controller/v1/{controllerId}/cancelAction/{actionId}/feedback', post_data, actionId=self.action_id)
 
 
 class CancelAction(object):

@@ -80,7 +80,7 @@ class DDIClient(object):
 
         Returns: JSON data
         """
-        return await self.get_resource('/{tenant}/controller/v1/{controllerId}')
+        return await self.get_resource('{tenant}/controller/v1/{controllerId}')
 
     async def configData(self, status_execution, status_result, action_id='',
                          status_details=(), **kwdata):
@@ -123,7 +123,7 @@ class DDIClient(object):
             'data': kwdata
         }
 
-        await self.put_resource('/{tenant}/controller/v1/{controllerId}/configData', put_data)
+        await self.put_resource('{tenant}/controller/v1/{controllerId}/configData', put_data)
 
 
     def build_api_url(self, api_path):
