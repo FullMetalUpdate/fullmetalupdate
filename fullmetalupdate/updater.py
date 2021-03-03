@@ -84,6 +84,7 @@ class AsyncUpdater(object):
                 container_name = ref.split(':')[1]
                 if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + VALIDATE_CHECKOUT):
                     res = self.checkout_container(container_name, None)
+                    self.update_container_ids(container_name)
                 if not res:
                     self.logger.error("Error when checking out container:{}".format(container_name))
                     break
@@ -168,14 +169,7 @@ class AsyncUpdater(object):
 
             self.logger.info("Checking out the new container {} rev {}".format(container_name, rev_number))
             res = self.checkout_container(container_name, rev_number)
-
-            self.logger.info("Update the UID and GID of the rootfs")
-            os.chown(PATH_APPS + '/' + container_name, CONTAINER_UID, CONTAINER_GID)
-            for dirpath, dirnames, filenames in os.walk(PATH_APPS + '/' + container_name):
-                for dname in dirnames:
-                    os.lchown(os.path.join(dirpath, dname), CONTAINER_UID, CONTAINER_GID)
-                for fname in filenames:
-                    os.lchown(os.path.join(dirpath, fname), CONTAINER_UID, CONTAINER_GID)
+            self.update_container_ids(container_name)
 
             if not res:
                 self.logger.error("Checking out container {} Failed!".format(container_name))
@@ -277,3 +271,18 @@ class AsyncUpdater(object):
         except GLib.Error as e:
             self.logger.error("Update System {} from OSTree repo failed ({})".format(self.remote_name_os, str(e)))
             return False
+
+    def update_container_ids(self, container_name):
+        """
+        By default, the container are checked out as root. This method sets the uid and
+        gid of all the container related files to 1000 (UID) and 1000 (GID).
+        Parameters:
+        container_name (str): the name of the container
+        """
+        self.logger.info("Update the UID and GID of the rootfs")
+        os.chown(PATH_APPS + '/' + container_name, CONTAINER_UID, CONTAINER_GID)
+        for dirpath, dirnames, filenames in os.walk(PATH_APPS + '/' + container_name):
+            for dname in dirnames:
+                os.lchown(os.path.join(dirpath, dname), CONTAINER_UID, CONTAINER_GID)
+            for fname in filenames:
+                os.lchown(os.path.join(dirpath, fname), CONTAINER_UID, CONTAINER_GID)
