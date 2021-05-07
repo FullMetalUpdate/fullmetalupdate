@@ -217,6 +217,7 @@ class AsyncUpdater(object):
                     self.logger.error("Error when checking out container:{}".format(container_name))
                     break
                 self.create_unit(container_name)
+            self.systemd.Reload()
             for ref in refs:
                 container_name = ref.split(':')[1]
                 if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
