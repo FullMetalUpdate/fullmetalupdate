@@ -160,7 +160,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
                 # checking if we just rebooted and we need to send the feedback in which
                 # case we don't need to pull the update image again
-                [feedback, reboot_data] = self.feedback_for_os_deployment(rev)
+                [feedback, reboot_data] = self.feedback_for_os_deployment(rev, action_id)
                 if feedback:
                     await self.ddi.deploymentBase[reboot_data["action_id"]].feedback(
                         DeploymentStatusExecution(reboot_data["status_execution"]),
@@ -301,14 +301,20 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         except IOError as e:
             self.logger.error("Writing reboot data failed ({})".format(e))
 
-    def feedback_for_os_deployment(self, revision):
+    def feedback_for_os_deployment(self, revision, action_id):
         """
         This method will generate a feedback message for the Hawkbit server and
         return the reboot data which will be used by the the DDI client to return
         the appropriate feedback message.
 
+        Firstly, it checks whether the reboot_data json file is present (file stored
+        before rebooting). Secondly, it checks whether the stored action_id matches the
+        distant action_id: they should be the same unless the user forced a change on the
+        server side. Lastly, it will check whether the system has rollbacked.
+
         Parameters:
         revision (str): the OS revision
+        action_id (str): the distant action_id
         """
 
         reboot_data = None
@@ -320,7 +326,17 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         except FileNotFoundError:
             return (False, None)
 
-        if self.check_for_rollback(revision):
+        # Cross checking action_ids
+        if action_id != reboot_data['action_id']:
+            msg = ("Server action_id ({}) does not match "
+                   "the action_id stored on last reboot ({})"
+                   .format(action_id, reboot_data['action_id']))
+            self.logger.error(msg)
+            reboot_data.update({"action_id": action_id})
+            reboot_data.update({"status_result": DeploymentStatusResult.failure.value})
+            reboot_data.update({"msg": msg})
+
+        elif self.check_for_rollback(revision):
             reboot_data.update({"status_result": DeploymentStatusResult.failure.value})
             reboot_data.update({"msg": "Deployment has failed and system has rollbacked"})
 
