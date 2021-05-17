@@ -207,6 +207,7 @@ class AsyncUpdater(object):
 
         try:
             [_, refs] = self.repo_containers.list_refs(None, None)
+            self.logger.info("There are {} containers to be started.".format(len(refs)))
             for ref in refs:
                 container_name = ref.split(':')[1]
                 if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + VALIDATE_CHECKOUT):
@@ -215,11 +216,23 @@ class AsyncUpdater(object):
                 if not res:
                     self.logger.error("Error when checking out container:{}".format(container_name))
                     break
-                self.create_and_start_unit(container_name)
+                self.create_unit(container_name)
+            self.systemd.Reload()
+            for ref in refs:
+                container_name = ref.split(':')[1]
+                if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
+                    self.start_unit(container_name)
         except (GLib.Error, Exception) as e:
             self.logger.error("Error checking out containers repo ({})".format(e))
             res = False
-        return res
+        finally:
+            return res
+
+    def create_unit(self, container_name):
+        """This method copies the .service file to /etc/systemd/system/ in order to create the unit for container_name."""
+        self.logger.info("Copy the service file to /etc/systemd/system/{}.service".format(container_name))
+        shutil.copy(PATH_APPS + '/' + container_name + '/systemd.service',
+                    PATH_SYSTEMD_UNITS + container_name + '.service')
 
     def start_unit(self, container_name):
         """This method starts the systemd unit for container_name."""
@@ -234,14 +247,6 @@ class AsyncUpdater(object):
         self.systemd.StopUnit(container_name + '.service', "replace")
         self.logger.info("Disable the container {}".format(container_name))
         self.systemd.DisableUnitFiles([container_name + '.service'], False)
-
-    def create_and_start_unit(self, container_name):
-        """This method creates the unit for container_name, and starts it of AUTOSTART exists."""
-        self.logger.info("Copy the service file to /etc/systemd/system/{}.service".format(container_name))
-        shutil.copy(PATH_APPS + '/' + container_name + '/systemd.service',
-                    PATH_SYSTEMD_UNITS + container_name + '.service')
-        if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
-            self.start_unit(container_name)
 
     def pull_ostree_ref(self, is_container, ref_sha, ref_name=None):
         """
@@ -344,7 +349,9 @@ class AsyncUpdater(object):
             if service[0][2] == 'not-found':
                 self.logger.info("First installation of the container {} on the "
                                  "system, we create and start the service".format(container_name))
-                self.create_and_start_unit(container_name)
+                self.create_unit(container_name)
+                if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
+                    self.start_unit(container_name)
             else:
                 if autostart == 1:
                     if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
