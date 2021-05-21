@@ -330,7 +330,7 @@ class AsyncUpdater(object):
             for fname in filenames:
                 os.lchown(os.path.join(dirpath, fname), CONTAINER_UID, CONTAINER_GID)
 
-    def handle_unit(self, container_name, autostart, autoremove):
+    def handle_container(self, container_name, autostart, autoremove):
         """
         This method will handle the container execution or deletion based on the autostart
         and autoremove arguments.
@@ -341,25 +341,29 @@ class AsyncUpdater(object):
                          otherwise
         autoremove (int): if set to 1, the container's directory will be deleted
         """
-        if autoremove == 1:
-            self.logger.info("Remove the directory: {}".format(PATH_APPS + '/' + container_name))
-            shutil.rmtree(PATH_APPS + '/' + container_name)
-        else:
-            service = self.systemd.ListUnitsByNames([container_name + '.service'])
-            if service[0][2] == 'not-found':
-                self.logger.info("First installation of the container {} on the "
-                                 "system, we create and start the service".format(container_name))
-                self.create_unit(container_name)
-                if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
-                    self.start_unit(container_name)
+        try:
+            if autoremove == 1:
+                self.logger.info("Remove the directory: {}".format(PATH_APPS + '/' + container_name))
+                shutil.rmtree(PATH_APPS + '/' + container_name)
             else:
-                if autostart == 1:
-                    if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
-                        open(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART, 'a').close()
-                    self.start_unit(container_name)
-                else:
+                service = self.systemd.ListUnitsByNames([container_name + '.service'])
+                if service[0][2] == 'not-found':
+                    self.logger.info("First installation of the container {} on the "
+                                    "system, we create and start the service".format(container_name))
                     if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
-                        os.remove(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART)
+                        self.start_unit(container_name)
+                else:
+                    if autostart == 1:
+                        if not os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
+                            open(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART, 'a').close()
+                        self.start_unit(container_name)
+                    else:
+                        if os.path.isfile(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART):
+                            os.remove(PATH_APPS + '/' + container_name + '/' + FILE_AUTOSTART)
+        except Exception as e:
+            self.logger.error("UpdateTest :: Handling {} failed ({})".format(container_name, e))
+            return False
+        return True
 
     def checkout_container(self, container_name, rev_number):
         """
