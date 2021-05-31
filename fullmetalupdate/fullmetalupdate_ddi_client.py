@@ -30,11 +30,17 @@ PATH_NOTIFY_SOCKET = '/tmp/fullmetalupdate/fullmetalupdate_notify.sock'
 
 class FullMetalUpdateDDIClient(AsyncUpdater):
     """
-    Client broker communicating via DBUS and HawkBit DDI HTTP
-    interface.
+    Client broker communicating via DBUS and HawkBit DDI HTTP interface. Inherits from AsyncUpdater Class.
+
+    :param logging logger: Logger used to print information regarding the update proceedings or to report errors.
+    :param DDIClient ddi: Client enabling easy GET / POST / PUT request to Hawkbit Server.
+    :param int action_id: Unique identifier of an Hawkbit update.
+    :param boolean lock_keeper: Lock to prevent an update to begin while the previous one has not finished yet.
     """
-    def __init__(self, session, host, ssl, tenant_id, target_name, auth_token,
-                 attributes, lock_keeper=None):
+
+    def __init__(self, session, host, ssl, tenant_id, target_name, auth_token, attributes, lock_keeper=None):
+        """ Constructor of FullMetalUpdateDDIClient Class.
+        """
         super(FullMetalUpdateDDIClient, self).__init__()
 
         self.attributes = attributes
@@ -49,7 +55,11 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         os.makedirs(os.path.dirname(PATH_NOTIFY_SOCKET), exist_ok=True)
 
     async def start_polling(self, wait_on_error=60):
-        """Wrapper around self.poll_base_resource() for exception handling."""
+        """ 
+        Wrapper around self.poll_base_resource() for exception handling.
+        
+        :param int wait_on_error: Timeout before retry on polling failled
+        """
 
         while True:
             try:
@@ -70,13 +80,24 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             await asyncio.sleep(wait_on_error)
 
     async def identify(self):
-        """Identify target against HawkBit."""
+        """
+        Identify target against HawkBit.
+        """
+
         self.logger.info('Sending identifying information to HawkBit')
         # identify
         await self.ddi.configData(ConfigStatusExecution.closed,
                                   ConfigStatusResult.success, **self.attributes)
 
     async def cancel(self, base):
+        """
+        Acknoledges cancelation request, retrives ID of Hawkbit update to be cancelled, cancels the relevant Hawkbit update 
+        and finally notify the Hawkbit server about the result of the cancelation process.
+
+        TODO : Implement Hawkbit Update cancelation (this method does not seem to do what it is meant to do)
+        
+        :param dictionnary base: Dictionnary storing information about a Hawkbit update.
+        """
         self.logger.info('Received cancelation request')
         # retrieve action id from URL
         deployment = base['_links']['cancelAction']['href']
@@ -93,14 +114,28 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             status_details=("Cancelling not supported",))
 
     async def install(self):
+        """
+        This method is never used anywhere in the whole FMU client.
+
+        TODO : Remove.
+        """
         if self.lock_keeper and not self.lock_keeper.lock(self):
             self.logger.info("Another installation is already in progress, aborting")
             return
 
     async def process_deployment(self, base):
         """
-        Check for deployments, download them, verify checksum and trigger
-        RAUC install operation.
+        This method performs a Hawkbit update in several steps :
+            - Retrives information about Hawkbit update based on base dictionnary ;
+            - Notifies Hawkbit server about the appropriate start of the update ;
+            - All chunks are then parsed, ie 
+                1) OS chunk are processed and cause a system reboot ;
+                2) Container Chunk cuase container updates ;
+            - Systemd dependancy tree is regenerated in order to take into account potential changes in dependancies caused by new service files ;
+            - Containers are then restarted ;
+            - Finally, Hawkbit server is notified with the result of the update (failure or success).
+
+        :param dictionnary base: Dictionnary storing information about a Hawkbit update.
         """
         if self.action_id is not None:
             self.logger.info('Deployment is already in progress')
@@ -235,7 +270,11 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 self.logger.error("Reboot failed: {}".format(e))
 
     async def sleep(self, base):
-        """Sleep time suggested by HawkBit."""
+        """ 
+        Timeout between two Hawkbit server polling tryouts. This sleep time is suggested by HawkBit. 
+
+        :param dictionnary base: Dictionnary storing information about a Hawkbit update.
+        """
         sleep_str = base['config']['polling']['sleep']
         self.logger.info('Will sleep for {}'.format(sleep_str))
         t = datetime.strptime(sleep_str, '%H:%M:%S')
@@ -243,7 +282,12 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         await asyncio.sleep(delta.total_seconds())
 
     async def poll_base_resource(self):
-        """Poll DDI API base resource."""
+        """
+        This method polls the server for new updates and takes action depending on polling results.
+
+        Wrapped in start_polling() to ease exceptions handling, this method continuously runs polling the server.
+        """
+
         while True:
             base = await self.ddi()
 
@@ -261,6 +305,14 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                          action_id, notify=None, timeout=None):
         """
         Wrapper method to execute the different steps of a container update.
+
+        :param string container_name: Name of the container.
+        :param string rev_number: Commit revision.
+        :param int autostart: set to 1 if the container should be automatically started, 0 otherwise
+        :param int autoremove: if set to 1, the container's directory will be deleted
+        :param int action_id: Unique identifier of an Hawkbit update.
+        :param int notify: Set to 1 if the container is a notify container.
+        :param int timeout: Timeout value of the communication socket.
         """
         try:
             self.init_container_remote(container_name)
@@ -280,6 +332,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
     def update_system(self, rev_number):
         """
         Wrapper method to execute the different steps of a OS update.
+
+        :param string rev_number: Commit revision.
         """
         try:
             self.pull_ostree_ref(False, rev_number)
@@ -292,13 +346,13 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
     def write_reboot_data(self, action_id, status_execution, status_result, msg):
         """
-        Write information about the current update in a file.
+        Write information about the current update in a json file.
 
-        Parameters:
-        action_id (int): the current action is (update id)
-        status_execution (enum): the execution status
-        status_result (enum): the result status
-        msg (str): the message to be sent to the server
+        :param int action_id: Unique identifier of an Hawkbit update.
+        :param DeploymentStatusExecution status_execution: Execution status of the current Hawkbit update.
+        :param DeploymentStatusResult status_result: Result status of the current Hawkbit update.
+        :param string msg: Message to be sent to the Hawkbit server.
+        :raises IOError: Exception raised if writting reboot data into a json file failed.
         """
         # the enums are not serializable thus we store their value
         reboot_data = {
@@ -320,14 +374,15 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         return the reboot data which will be used by the the DDI client to return
         the appropriate feedback message.
 
-        Parameters:
-        revision (str): the OS revision
+        :param checksum revision: Checksum of revision stored on OSTree remote repository.
+        :returns: (True, reboot_data) if the reboot data json file has been correctly found and updated.
+        :raises FileNotFoundError: Exception raised if the reboot data json file has not been found.
         """
 
         reboot_data = None
         try:
             with open(PATH_REBOOT_DATA, "r") as f:
-                reboot_data = json.load(f)
+                reboot_data = json.load(f) # json.load() return a JSON object (similar to a dictionnary whose keys are strings and whose values are JSON types)
             if reboot_data is None:
                 self.logger.error("Rebooting data loading failed")
         except FileNotFoundError:
@@ -344,15 +399,15 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
     def create_and_start_feedback_thread(self, container_name, rev, autostart, autoremove, timeout, action_id):
         """
         This method is called to initialize and start the feedback thread used to
-        feedback the server the status of the notify container. See the
+        feedback the server the status of a container whose notify variable is set. See the
         container_feedbacker thread method.
 
-        Parameters:
-        container_name (str): the name os the container
-        rev (str): the commit revision, used for rollbacking
-        autostart (int): autostart of the container, used for rollbacking
-        autoremove (int): autoremove of the container, used for rollbacking
-        timeout (int): timeout value of the communication socket
+        :param string container_name: Name of the container.
+        :param string rev: Commit revision, used for rollbacking.
+        :param int autostart: Autostart variable of the container, used for rollbacking.
+        :param int autoremove: Autoremove of the container, used for rollbacking.
+        :param int timeout: Timeout value of the communication socket.
+        :param int action_id: we pass a direct value of action_id to the feedback thread to avoid self.action_id being unset before the feedback thread notifies the server.
         """
         self.logger.info("Creating socket {}".format(PATH_NOTIFY_SOCKET))
         sock = s.socket(s.AF_UNIX, s.SOCK_STREAM)
@@ -385,18 +440,16 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         This thread method is used to feedback the server for containers which provide
         the notify feature of systemd. It will trigger a rollback on the container in case
         of failure (if possible).
+
         This method will wait on an Unix socket for information about the notify result,
         and proceed in consequence.
 
-        Parameters:
-        event_loop (EventLoop): the main event loop. Used to perform a feedback from this
-                                thread.
-        socket (socket): the socket used for communication between the container service
-                         and this thread
-        container_name (str): the name of the container
-        rev_number (str): the commit revision, used for rollbacking
-        autostart (int): autostart of the container, used for rollbacking
-        autoremove (int): autoremove of the container, used for rollbacking
+        :param EventLoop event_loop: Main event loop. Used to perform a feedback from this thread.
+        :param socket socket: Socket used for communication between the container service and this thread.
+        :param string container_name: Name of the container.
+        :param string rev: Commit revision, used for rollbacking.
+        :param int autostart: Autostart variable of the container, used for rollbacking.
+        :param int autoremove: Autoremove of the container, used for rollbacking.
         """
 
         try:
@@ -458,14 +511,12 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         This method Rollbacks the container, if possible, and returns a message that will
         be sent to the server.
 
-        Parameters:
-        container_name (str): the name of the container
-        autostart (int): autostart of the container
-        autoremove (int): autoremove of the container
+        :param string container_name: Name of the container.
+        :param int autostart: Autostart variable of the container, used for rollbacking.
+        :param int autoremove: Autoremove of the container, used for rollbacking.
 
-        Returns:
-        end_msg (str): the end of the message that will be sent, which depends on the
-                       status of the rollback (performed or not)
+        :returns: End of the message that will be sent, which depends on the status of the rollback (performed or not)
+        :rtype: string
         """
 
         end_msg = ""
