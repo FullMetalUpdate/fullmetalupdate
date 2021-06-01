@@ -10,8 +10,8 @@ FullMetalUpdate is now documented as a Sphinx Project, which allow you to genera
 Please follow the commands below.
 
 ```
-sudo apt-get install ostree gir1.2ostree-1.0
-pip install aiohttp sphinx sphinx-rtd-theme recommonmark
+sudo apt-get install ostree gir1.2-ostree-1.0
+pip install pydbus aiohttp sphinx sphinx-rtd-theme recommonmark
 
 make html
 firefox sphinx/html/index.html

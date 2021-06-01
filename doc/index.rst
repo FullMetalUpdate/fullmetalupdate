@@ -10,17 +10,16 @@
 
 FullMetalUpdate is a Python application that handles update for the System on which it is running.
 
-Get started  with the documentation `here <https://www.fullmetalupdate.io/docs/documentation/>`_.
-
-Introduction
-=============
-
-TODO
+Get started  with your own board on `FullMetalUpdate Official Tutorial <https://www.fullmetalupdate.io/docs/documentation/>`_.
 
 Architecture
 =============
 
 SOON
+
+.. toctree::
+   :maxdepth: 2
+   :glob:
 
 FMU Client API
 =================
@@ -37,11 +36,18 @@ Technical documentation
    :maxdepth: 2
    :glob:
 
+   ./src/bootup.md
    ./src/add-targets-to-hawkbit.md
+
+| See the `Rollback Feature <https://github.com/v-bertin/documentation/blob/master/rollback.md>`_ documentation on Github.
+| See `Benchmark on FullMetalUpdate <https://github.com/FullMetalUpdate/documentation/blob/master/benchmark.md>`_ on Github.
+
+More documentation incoming on `FullMetalUpdate Documentation <https://github.com/FullMetalUpdate/documentation>`_ Github.
 
 Contribute
 ==============
-Please see `directives <https://www.fullmetalupdate.io/docs/contribute/>`_ on how to contribute here.
+| Please see `FullMetalUpdate <https://github.com/FullMetalUpdate/fullmetalupdate>`_ Github.
+| Please see our `directives <https://www.fullmetalupdate.io/docs/contribute/>`_ on how to contribute.
 
 Contact us
 ===========
