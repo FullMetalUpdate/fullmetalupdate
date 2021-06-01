@@ -529,6 +529,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                                         previous_rev,
                                         autostart,
                                         autoremove)
+            self.systemd.Reload()
+            res &= self.handle_container(container_name, autostart, autoremove)
             if res:
                 end_msg = "\nContainer has rollbacked."
             else:
