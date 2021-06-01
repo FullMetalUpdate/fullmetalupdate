@@ -35,10 +35,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
     :param logging logger: Logger used to print information regarding the update proceedings or to report errors.
     :param DDIClient ddi: Client enabling easy GET / POST / PUT request to Hawkbit Server.
     :param int action_id: Unique identifier of an Hawkbit update.
-    :param boolean lock_keeper: Lock to prevent an update to begin while the previous one has not finished yet.
     """
 
-    def __init__(self, session, host, ssl, tenant_id, target_name, auth_token, attributes, lock_keeper=None):
+    def __init__(self, session, host, ssl, tenant_id, target_name, auth_token, attributes):
         """ Constructor of FullMetalUpdateDDIClient Class.
         """
         super(FullMetalUpdateDDIClient, self).__init__()
@@ -48,8 +47,6 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         self.logger = logging.getLogger('fullmetalupdate_hawkbit')
         self.ddi = DDIClient(session, host, ssl, auth_token, tenant_id, target_name)
         self.action_id = None
-
-        self.lock_keeper = lock_keeper
 
         os.makedirs(os.path.dirname(PATH_REBOOT_DATA), exist_ok=True)
         os.makedirs(os.path.dirname(PATH_NOTIFY_SOCKET), exist_ok=True)
@@ -112,16 +109,6 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             CancelStatusExecution.rejected,
             CancelStatusResult.success,
             status_details=("Cancelling not supported",))
-
-    async def install(self):
-        """
-        This method is never used anywhere in the whole FMU client.
-
-        TODO : Remove.
-        """
-        if self.lock_keeper and not self.lock_keeper.lock(self):
-            self.logger.info("Another installation is already in progress, aborting")
-            return
 
     async def process_deployment(self, base):
         """
