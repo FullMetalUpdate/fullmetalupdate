@@ -216,7 +216,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
             elif update['part'] == 'bApp':
                 self.logger.info("App {} v.{} - updating...".format(update['name'], update['version']))
-                update['status_update'] = self.update_container(update['name'], update['rev'], update['autostart'], update['autoremove'], update['notify'], update['timeout'])
+                update['status_update'] = self.update_container(update['name'], update['rev'], update['autostart'], update['autoremove'], self.action_id, update['notify'], update['timeout'])
                 update['status_execution'] = DeploymentStatusExecution.closed
                 updates.append(update)
 
@@ -464,7 +464,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     status_execution = DeploymentStatusExecution.closed
                     end_msg = self.rollback_container(container_name,
                                                       autostart,
-                                                      autoremove)
+                                                      autoremove,
+                                                      action_id)
                     msg = "The container failed to start with result :" \
                         + "\n\tSERVICE_RESULT=" + systemd_info[0] \
                         + "\n\tEXIT_CODE=" + systemd_info[1] \
@@ -481,7 +482,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             self.logger.error(msg)
             end_msg = self.rollback_container(container_name,
                                               autostart,
-                                              autoremove)
+                                              autoremove,
+                                              action_id)
             asyncio.run_coroutine_threadsafe(
                 self.ddi.deploymentBase[action_id].feedback(
                     status_execution, status_result, [msg + end_msg]), event_loop)
@@ -493,7 +495,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         except FileNotFoundError as e:
             self.logger.error("Error while removing socket ({})".format(e))
 
-    def rollback_container(self, container_name, autostart, autoremove):
+    def rollback_container(self, container_name, autostart, autoremove, action_id):
         """
         This method Rollbacks the container, if possible, and returns a message that will
         be sent to the server.
@@ -515,7 +517,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             res = self.update_container(container_name,
                                         previous_rev,
                                         autostart,
-                                        autoremove)
+                                        autoremove,
+                                        action_id)
             self.systemd.Reload()
             res &= self.handle_container(container_name, autostart, autoremove)
             if res:
