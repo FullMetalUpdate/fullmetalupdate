@@ -47,6 +47,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         self.logger = logging.getLogger('fullmetalupdate_hawkbit')
         self.ddi = DDIClient(session, host, ssl, auth_token, tenant_id, target_name)
         self.action_id = None
+        self.feedbackThreads = []
+        self.feedbackResults = []
 
         os.makedirs(os.path.dirname(PATH_REBOOT_DATA), exist_ok=True)
         os.makedirs(os.path.dirname(PATH_NOTIFY_SOCKET), exist_ok=True)
@@ -124,11 +126,10 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
         :param dictionnary base: Dictionnary storing information about a Hawkbit update.
         """
+        
         if self.action_id is not None:
             self.logger.info('Deployment is already in progress')
             return
-
-        status_result = DeploymentStatusResult.success
 
         # retrieve action id and resource parameter from URL
         deployment = base['_links']['deploymentBase']['href']
@@ -216,7 +217,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
             elif update['part'] == 'bApp':
                 self.logger.info("App {} v.{} - updating...".format(update['name'], update['version']))
-                update['status_update'] = self.update_container(update['name'], update['rev'], update['autostart'], update['autoremove'], self.action_id, update['notify'], update['timeout'])
+                update['status_update'] = self.update_container(update['name'], update['rev'], update['autostart'], update['autoremove'], update['notify'], update['timeout'])
                 update['status_execution'] = DeploymentStatusExecution.closed
                 updates.append(update)
 
@@ -224,18 +225,26 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
         final_result = True
         fails = ""
+        feedbackThreadIt = iter(self.feedbackThreads)
+        feedbackResultIt = iter(self.feedbackResults)
 
         for update in updates:
             update['status_update'] &= self.handle_container(update['name'], update['autostart'], update['autoremove'])
+            if update['notify'] == 1:
+                threading.Thread.join(next(feedbackThreadIt))
+                status_update, feedbackMsg = next(feedbackResultIt)
+                update['status_update'] &= status_update
+
+            # [container_name, status_execution, status_result, status_update, msg]
             if not update['status_update']:
-                msg = "App {} v.{} Deployment failed".format(update['name'], update['version'])
-                self.logger.error(msg)
-                update['status_result'] = DeploymentStatusResult.failure
-                fails += update['name'] + " "
-            elif update['notify'] != 1:
-                msg = "App {} v.{} Deployment succeed".format(update['name'], update['version'])
-                self.logger.info(msg)
-                update['status_result'] = DeploymentStatusResult.success
+               msg = "App {} v.{} Deployment failed".format(update['name'], update['version']) + "\n" + feedbackMsg
+               self.logger.error(msg)
+               update['status_result'] = DeploymentStatusResult.failure
+               fails += update['name'] + " "
+            else:
+               msg = "App {} v.{} Deployment succeed".format(update['name'], update['version'])
+               self.logger.info(msg)
+               update['status_result'] = DeploymentStatusResult.success
 
             final_result &= (update['status_result'] == DeploymentStatusResult.success)
         
@@ -288,8 +297,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
             await self.sleep(base)
 
-    def update_container(self, container_name, rev_number, autostart, autoremove,
-                         action_id, notify=None, timeout=None):
+    def update_container(self, container_name, rev_number, autostart, autoremove, notify=None, timeout=None):
         """
         Wrapper method to execute the different steps of a container update.
 
@@ -307,9 +315,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             self.checkout_container(container_name, rev_number)
             self.update_container_ids(container_name)
             if (autostart == 1) and (notify == 1) and (autoremove != 1):
-                self.create_and_start_feedback_thread(container_name, rev_number,
-                                                      autostart, autoremove, timeout,
-                                                      action_id)
+                feedback_thread = self.create_and_start_feedback_thread(container_name, rev_number, autostart, autoremove, timeout)
+                self.feedbackThreads.append(feedback_thread)
             self.create_unit(container_name)
         except Exception as e:
             self.logger.error("Updating {} failed ({})".format(container_name, e))
@@ -383,7 +390,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
         return (True, reboot_data)
 
-    def create_and_start_feedback_thread(self, container_name, rev, autostart, autoremove, timeout, action_id):
+    def create_and_start_feedback_thread(self, container_name, rev, autostart, autoremove, timeout):
         """
         This method is called to initialize and start the feedback thread used to
         feedback the server the status of a container whose notify variable is set. See the
@@ -405,24 +412,21 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
         container_feedbackd = threading.Thread(
             target=self.container_feedbacker,
-            args=(asyncio.get_event_loop(),
-                  sock,
+            args=(sock,
                   container_name,
                   rev,
                   autostart,
-                  autoremove,
-                  action_id),
+                  autoremove),
             name="container-feedback")
         container_feedbackd.start()
+        return container_feedbackd
 
     def container_feedbacker(self,
-                             event_loop,
                              socket,
                              container_name,
                              rev_number,
                              autostart,
-                             autoremove,
-                             action_id):
+                             autoremove):
         """
         This thread method is used to feedback the server for containers which provide
         the notify feature of systemd. It will trigger a rollback on the container in case
@@ -447,46 +451,33 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             if datagram:
                 systemd_info = datagram.strip().decode("utf-8").split()
                 self.logger.debug("Datagram received : {}".format(systemd_info))
+
                 if systemd_info[0] == 'success':
                     # feedback the server positively
-                    msg = "The notify container started successfully"
-                    status_result = DeploymentStatusResult.success
-                    status_execution = DeploymentStatusExecution.closed
+                    msg = "Container" + container_name + " started successfully"
+                    status_update = True
                     self.logger.info(msg)
-                    asyncio.run_coroutine_threadsafe(
-                        self.ddi.deploymentBase[action_id].feedback(
-                            status_execution, status_result, [msg]), event_loop)
                     # Write this new revision for future updates
                     self.set_current_revision(container_name, rev_number)
                 else:
-                    # rollback + feedback the server
-                    status_result = DeploymentStatusResult.failure
-                    status_execution = DeploymentStatusExecution.closed
-                    end_msg = self.rollback_container(container_name,
-                                                      autostart,
-                                                      autoremove,
-                                                      action_id)
-                    msg = "The container failed to start with result :" \
+                    # rollback + feedback the server negatively
+                    status_update = False
+                    end_msg = self.rollback_container(container_name, autostart, autoremove)
+                    msg = "Container" + container_name + " failed to start with result :" \
                         + "\n\tSERVICE_RESULT=" + systemd_info[0] \
                         + "\n\tEXIT_CODE=" + systemd_info[1] \
                         + "\n\tEXIT_STATUS=" + systemd_info[2] \
                         + end_msg
                     self.logger.info(msg)
-                    asyncio.run_coroutine_threadsafe(self.ddi.deploymentBase[action_id].feedback(
-                        status_execution, status_result, [msg]), event_loop)
         except s.timeout:
             # socket timeout, try to rollback if possible
-            status_result = DeploymentStatusResult.failure
-            status_execution = DeploymentStatusExecution.closed
-            msg = "The socket timed out."
+            status_update = False
+            msg = "Container" + container_name + "failed to start : the socket timed out."
             self.logger.error(msg)
             end_msg = self.rollback_container(container_name,
                                               autostart,
-                                              autoremove,
-                                              action_id)
-            asyncio.run_coroutine_threadsafe(
-                self.ddi.deploymentBase[action_id].feedback(
-                    status_execution, status_result, [msg + end_msg]), event_loop)
+                                              autoremove)
+            msg += end_msg
 
         socket.close()
         self.logger.info("Removing socket {}".format(PATH_NOTIFY_SOCKET))
@@ -494,8 +485,10 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             os.remove(PATH_NOTIFY_SOCKET)
         except FileNotFoundError as e:
             self.logger.error("Error while removing socket ({})".format(e))
+        
+        self.feedbackResults.append((status_update, msg))
 
-    def rollback_container(self, container_name, autostart, autoremove, action_id):
+    def rollback_container(self, container_name, autostart, autoremove):
         """
         This method Rollbacks the container, if possible, and returns a message that will
         be sent to the server.
@@ -514,11 +507,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         if previous_rev is None:
             end_msg = "\nFirst installation of the container, cannot rollback."
         else:
-            res = self.update_container(container_name,
-                                        previous_rev,
-                                        autostart,
-                                        autoremove,
-                                        action_id)
+            res = self.update_container(container_name, previous_rev, autostart, autoremove)
             self.systemd.Reload()
             res &= self.handle_container(container_name, autostart, autoremove)
             if res:
