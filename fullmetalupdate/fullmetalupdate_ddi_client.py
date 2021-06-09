@@ -249,8 +249,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 next(feedbackThreadIt).join()
                 self.mutexResults.acquire()
                 update['status_update'] &= self.feedbackResults[update['name']]['status_update']
-                self.mutexResults.release()
                 feedbackMsg = self.feedbackResults[update['name']]['msg']
+                self.mutexResults.release()
 
             if not update['status_update']:
                msg = "App {} v.{} Deployment failed\n {}".format(update['name'], update['version'], feedbackMsg)
@@ -503,7 +503,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             self.logger.error("Error while removing socket ({})".format(e))
         
         self.mutexResults.acquire()
-        self.feedbackResults[container_name] = dict.fromkeys(("status_update, msg"))
+        self.feedbackResults[container_name] = dict.fromkeys(("status_update", "msg"))
         self.feedbackResults[container_name]["status_update"] = status_update
         self.feedbackResults[container_name]["msg"] = msg
         self.mutexResults.release()
