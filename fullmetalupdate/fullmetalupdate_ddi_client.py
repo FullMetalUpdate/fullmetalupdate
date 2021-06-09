@@ -6,7 +6,7 @@ import os.path
 import re
 import logging
 import json
-import threading
+from threading import Lock, Thread
 import socket as s
 import subprocess
 import asyncio
@@ -21,8 +21,6 @@ from rauc_hawkbit.ddi.deployment_base import (
 from rauc_hawkbit.ddi.cancel_action import (
     CancelStatusExecution, CancelStatusResult)
 from aiohttp.client_exceptions import ClientOSError, ClientResponseError
-gi.require_version('OSTree', '1.0')
-from gi.repository import GLib, Gio, OSTree
 
 PATH_REBOOT_DATA = '/var/local/fullmetalupdate/reboot_data.json'
 DIR_NOTIFY_SOCKET = '/tmp/fullmetalupdate/'
@@ -36,9 +34,11 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
     :param DDIClient ddi: Client enabling easy GET / POST / PUT request to Hawkbit Server.
     :param int action_id: Unique identifier of an Hawkbit update.
     :param list feedbackThreads: List of feedback threads to make accesses easier.
-    :param dictionnary feedbackResults: each feedback thread is associated with a status_update and a message, which describes if \
+    :param dictionnary feedbackResults: Each feedback thread is associated with a status_update and a message, which describes if
         the starting process of the associated container went well or not.
         feedbackResults =  {container-sd-notify : {status_result : ... , msg : ...}}
+    :param Lock mutexResults: Mutex that protects feedbackResults from concurrent accesses (accesses from main thread and accesses
+        from feedback threads). 
     """
 
     def __init__(self, session, host, ssl, tenant_id, target_name, auth_token, attributes):
@@ -53,6 +53,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         self.action_id = None
         self.feedbackThreads = []
         self.feedbackResults = None
+        self.mutexResults = Lock()
 
         os.makedirs(os.path.dirname(PATH_REBOOT_DATA), exist_ok=True)
         os.makedirs(DIR_NOTIFY_SOCKET, exist_ok=True)
@@ -230,7 +231,9 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         self.systemd.Reload()
 
         seq = [update['name'] for update in updates]
+        self.mutexResults.acquire()
         self.feedbackResults = dict.fromkeys(seq)
+        self.mutexResults.release()
 
         # Container restart process
         for update in updates:
@@ -243,8 +246,10 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         # Hawkbit server feedback process
         for update in updates:
             if update['notify'] == 1:
-                threading.Thread.join(next(feedbackThreadIt))
+                next(feedbackThreadIt).join()
+                self.mutexResults.acquire()
                 update['status_update'] &= self.feedbackResults[update['name']]['status_update']
+                self.mutexResults.release()
                 feedbackMsg = self.feedbackResults[update['name']]['msg']
 
             if not update['status_update']:
@@ -421,7 +426,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             os.remove(DIR_NOTIFY_SOCKET + sock_name)
         sock.bind(DIR_NOTIFY_SOCKET + sock_name)
 
-        container_feedbackd = threading.Thread(
+        container_feedbackd = Thread(
             target=self.container_feedbacker,
             args=(sock,
                   container_name,
@@ -497,9 +502,11 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         except FileNotFoundError as e:
             self.logger.error("Error while removing socket ({})".format(e))
         
+        self.mutexResults.acquire()
         self.feedbackResults[container_name] = dict.fromkeys(("status_update, msg"))
         self.feedbackResults[container_name]["status_update"] = status_update
         self.feedbackResults[container_name]["msg"] = msg
+        self.mutexResults.release()
 
     def rollback_container(self, container_name, autostart, autoremove):
         """
