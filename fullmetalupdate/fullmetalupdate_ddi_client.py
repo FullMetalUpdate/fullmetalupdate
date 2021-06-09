@@ -25,7 +25,7 @@ gi.require_version('OSTree', '1.0')
 from gi.repository import GLib, Gio, OSTree
 
 PATH_REBOOT_DATA = '/var/local/fullmetalupdate/reboot_data.json'
-PATH_NOTIFY_SOCKET = '/tmp/fullmetalupdate/fullmetalupdate_notify.sock'
+DIR_NOTIFY_SOCKET = '/tmp/fullmetalupdate/'
 
 
 class FullMetalUpdateDDIClient(AsyncUpdater):
@@ -35,6 +35,10 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
     :param logging logger: Logger used to print information regarding the update proceedings or to report errors.
     :param DDIClient ddi: Client enabling easy GET / POST / PUT request to Hawkbit Server.
     :param int action_id: Unique identifier of an Hawkbit update.
+    :param list feedbackThreads: List of feedback threads to make accesses easier.
+    :param dictionnary feedbackResults: each feedback thread is associated with a status_update and a message, which describes if \
+        the starting process of the associated container went well or not.
+        feedbackResults =  {container-sd-notify : {status_result : ... , msg : ...}}
     """
 
     def __init__(self, session, host, ssl, tenant_id, target_name, auth_token, attributes):
@@ -48,10 +52,10 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         self.ddi = DDIClient(session, host, ssl, auth_token, tenant_id, target_name)
         self.action_id = None
         self.feedbackThreads = []
-        self.feedbackResults = []
+        self.feedbackResults = None
 
         os.makedirs(os.path.dirname(PATH_REBOOT_DATA), exist_ok=True)
-        os.makedirs(os.path.dirname(PATH_NOTIFY_SOCKET), exist_ok=True)
+        os.makedirs(DIR_NOTIFY_SOCKET, exist_ok=True)
 
     async def start_polling(self, wait_on_error=60):
         """ 
@@ -119,7 +123,8 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             - Notifies Hawkbit server about the appropriate start of the update ;
             - All chunks are then parsed, ie 
                 1) OS chunk are processed and cause a system reboot ;
-                2) Container Chunk cuase container updates ;
+                2) Container Chunk cause container updates. A containers that implements the notify feature of systemd is \
+                    associated with a feedback thread, which monitors its execution ;
             - Systemd dependancy tree is regenerated in order to take into account potential changes in dependancies caused by new service files ;
             - Containers are then restarted ;
             - Finally, Hawkbit server is notified with the result of the update (failure or success).
@@ -162,6 +167,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         seq = ('name', 'version', 'rev', 'part', 'autostart', 'autoremove', 'status_execution', 'status_update', 'status_result', 'notify', 'timeout')
         updates = []
 
+        # Update process
         for chunk in deploy_info['deployment']['chunks']:
             update = dict.fromkeys(seq)
             # parse the metadata included in the update
@@ -188,10 +194,10 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 # case we don't need to pull the update image again
                 [feedback, reboot_data] = self.feedback_for_os_deployment(update['rev'])
                 if feedback:
-                    await self.ddi.deploymentBase[reboot_data["action_id"]].feedback(
-                        DeploymentStatusExecution(reboot_data["status_execution"]),
-                        DeploymentStatusResult(reboot_data["status_result"]),
-                        [reboot_data["msg"]])
+                    await self.ddi.deploymentBase[reboot_data['action_id']].feedback(
+                        DeploymentStatusExecution(reboot_data['status_execution']),
+                        DeploymentStatusResult(reboot_data['status_result']),
+                        [reboot_data['msg']])
                     self.action_id = None
                     return
 
@@ -223,21 +229,26 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
         self.systemd.Reload()
 
+        seq = [update['name'] for update in updates]
+        self.feedbackResults = dict.fromkeys(seq)
+
+        # Container restart process
+        for update in updates:
+            update['status_update'] &= self.handle_container(update['name'], update['autostart'], update['autoremove'])
+
         final_result = True
         fails = ""
         feedbackThreadIt = iter(self.feedbackThreads)
-        feedbackResultIt = iter(self.feedbackResults)
 
+        # Hawkbit server feedback process
         for update in updates:
-            update['status_update'] &= self.handle_container(update['name'], update['autostart'], update['autoremove'])
             if update['notify'] == 1:
                 threading.Thread.join(next(feedbackThreadIt))
-                status_update, feedbackMsg = next(feedbackResultIt)
-                update['status_update'] &= status_update
+                update['status_update'] &= self.feedbackResults[update['name']]['status_update']
+                feedbackMsg = self.feedbackResults[update['name']]['msg']
 
-            # [container_name, status_execution, status_result, status_update, msg]
             if not update['status_update']:
-               msg = "App {} v.{} Deployment failed".format(update['name'], update['version']) + "\n" + feedbackMsg
+               msg = "App {} v.{} Deployment failed\n {}".format(update['name'], update['version'], feedbackMsg)
                self.logger.error(msg)
                update['status_result'] = DeploymentStatusResult.failure
                fails += update['name'] + " "
@@ -401,14 +412,14 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         :param int autostart: Autostart variable of the container, used for rollbacking.
         :param int autoremove: Autoremove of the container, used for rollbacking.
         :param int timeout: Timeout value of the communication socket.
-        :param int action_id: we pass a direct value of action_id to the feedback thread to avoid self.action_id being unset before the feedback thread notifies the server.
         """
-        self.logger.info("Creating socket {}".format(PATH_NOTIFY_SOCKET))
+        sock_name = "fullmetalupdate_notify_" + container_name + ".sock"
+        self.logger.info("Creating socket {}".format(sock_name))
         sock = s.socket(s.AF_UNIX, s.SOCK_STREAM)
         sock.settimeout(timeout)
-        if os.path.exists(PATH_NOTIFY_SOCKET):
-            os.remove(PATH_NOTIFY_SOCKET)
-        sock.bind(PATH_NOTIFY_SOCKET)
+        if os.path.exists(DIR_NOTIFY_SOCKET + sock_name):
+            os.remove(DIR_NOTIFY_SOCKET + sock_name)
+        sock.bind(DIR_NOTIFY_SOCKET + sock_name)
 
         container_feedbackd = threading.Thread(
             target=self.container_feedbacker,
@@ -417,7 +428,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                   rev,
                   autostart,
                   autoremove),
-            name="container-feedback")
+            name= "container-feedback-" + container_name)
         container_feedbackd.start()
         return container_feedbackd
 
@@ -435,7 +446,6 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         This method will wait on an Unix socket for information about the notify result,
         and proceed in consequence.
 
-        :param EventLoop event_loop: Main event loop. Used to perform a feedback from this thread.
         :param socket socket: Socket used for communication between the container service and this thread.
         :param string container_name: Name of the container.
         :param string rev: Commit revision, used for rollbacking.
@@ -444,6 +454,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         """
 
         try:
+            sock_name = "fullmetalupdate_notify_" + container_name + ".sock"
             socket.listen(1)
             [conn, _] = socket.accept()
             datagram = conn.recv(1024)
@@ -454,7 +465,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
                 if systemd_info[0] == 'success':
                     # feedback the server positively
-                    msg = "Container" + container_name + " started successfully"
+                    msg = "Container " + container_name + " started successfully"
                     status_update = True
                     self.logger.info(msg)
                     # Write this new revision for future updates
@@ -463,7 +474,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                     # rollback + feedback the server negatively
                     status_update = False
                     end_msg = self.rollback_container(container_name, autostart, autoremove)
-                    msg = "Container" + container_name + " failed to start with result :" \
+                    msg = "Container " + container_name + " failed to start with result :" \
                         + "\n\tSERVICE_RESULT=" + systemd_info[0] \
                         + "\n\tEXIT_CODE=" + systemd_info[1] \
                         + "\n\tEXIT_STATUS=" + systemd_info[2] \
@@ -472,7 +483,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         except s.timeout:
             # socket timeout, try to rollback if possible
             status_update = False
-            msg = "Container" + container_name + "failed to start : the socket timed out."
+            msg = "Container " + container_name + " failed to start : the socket timed out."
             self.logger.error(msg)
             end_msg = self.rollback_container(container_name,
                                               autostart,
@@ -480,13 +491,15 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             msg += end_msg
 
         socket.close()
-        self.logger.info("Removing socket {}".format(PATH_NOTIFY_SOCKET))
+        self.logger.info("Removing socket {}".format(sock_name))
         try:
-            os.remove(PATH_NOTIFY_SOCKET)
+            os.remove(DIR_NOTIFY_SOCKET + sock_name)
         except FileNotFoundError as e:
             self.logger.error("Error while removing socket ({})".format(e))
         
-        self.feedbackResults.append((status_update, msg))
+        self.feedbackResults[container_name] = dict.fromkeys(("status_update, msg"))
+        self.feedbackResults[container_name]["status_update"] = status_update
+        self.feedbackResults[container_name]["msg"] = msg
 
     def rollback_container(self, container_name, autostart, autoremove):
         """
