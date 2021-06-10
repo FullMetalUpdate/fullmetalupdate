@@ -156,7 +156,6 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 status_execution, status_result, [msg])
             raise APIError(msg)
         else:
-            # problem ?
             msg = "FullMetalUpdate:Proceeding"
             percentage = {"cnt": 0, "of": chunks_qty}
             status_execution = DeploymentStatusExecution.proceeding
@@ -164,6 +163,14 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             await self.ddi.deploymentBase[action_id].feedback(
                 status_execution, status_result, [msg],
                 percentage=percentage)
+        
+        # Algorithm to sort chunks : OS chunk first and then Apps chunk
+        count = 0
+        for count in range(chunks_qty):
+            if deploy_info['deployment']['chunks'][count]['part'] == 'os':
+                deploy_info['deployment']['chunks'].insert(0, deploy_info['deployment']['chunks'][count])
+                del deploy_info['deployment']['chunks'][count + 1]
+                break
 
         self.action_id = action_id
         final_result_os = True
@@ -251,6 +258,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         final_result_apps = True
         fails = ""
         feedbackMsg = ""
+        notifyMsg = ""
         feedbackThreadIt = iter(self.feedbackThreads)
 
         # Hawkbit server feedback process
@@ -264,7 +272,7 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
 
             if not update['status_update']:
                 msg = "App {} v.{} Deployment failed : {}\n".format(update['name'], update['version'], feedbackMsg)
-                notifyMsg = msg
+                notifyMsg += msg
                 self.logger.error(msg)
                 update['status_result'] = DeploymentStatusResult.failure
                 fails += update['name'] + " "
@@ -288,7 +296,6 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             notifyMsg = msg + "\n" + notifyMsg
         if feedback:
             notifyMsg += reboot_data['msg']
-            status_result = DeploymentStatusResult.success
             
         await self.ddi.deploymentBase[self.action_id].feedback(DeploymentStatusExecution.closed, status_result, [notifyMsg])
         self.action_id = None
