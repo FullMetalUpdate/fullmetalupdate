@@ -39,7 +39,7 @@ Technical documentation
    ./src/bootup.md
    ./src/add-targets-to-hawkbit.md
 
-| See the `Rollback Feature <https://github.com/v-bertin/documentation/blob/master/rollback.md>`_ documentation on Github.
+| See the `Rollback Feature <https://github.com/FullMetalUpdate/documentation/blob/master/rollback.md>`_ documentation on Github.
 | See `Benchmark on FullMetalUpdate <https://github.com/FullMetalUpdate/documentation/blob/master/benchmark.md>`_ on Github.
 
 More documentation incoming on `FullMetalUpdate Documentation <https://github.com/FullMetalUpdate/documentation>`_ Github.

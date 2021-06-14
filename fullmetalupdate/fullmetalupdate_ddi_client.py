@@ -120,15 +120,17 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
     async def process_deployment(self, base):
         """
         This method performs a Hawkbit update in several steps :
-            - Retrives information about Hawkbit update based on base dictionnary ;
+            - Retrieves information about the Hawkbit update based on base dictionnary ;
             - Notifies Hawkbit server about the appropriate start of the update ;
-            - All chunks are then parsed, ie 
-                1) OS chunk are processed and cause a system reboot ;
-                2) Container Chunk cause container updates. A containers that implements the notify feature of systemd is \
-                    associated with a feedback thread, which monitors its execution ;
-            - Systemd dependancy tree is regenerated in order to take into account potential changes in dependancies caused by new service files ;
+            - All chunks are then parsed and processed, ie 
+                1) OS chunks cause a system update (see update_system method) and a system reboot ;
+                2) Apps chunks cause apps updates (see update_container method). An app / container that implements the notify feature of systemd is 
+                    associated with a feedback thread, which monitors its execution and feedbacks the FMU client if the app succesfully started or not;
+            - Systemd dependency tree is regenerated in order to take into account every change in service files (new service files or updated
+                service files), including new dependencies, changes in startup scripts, etc ;
             - Containers are then restarted ;
-            - Finally, Hawkbit server is notified with the result of the update (failure or success).
+            - Finally, Hawkbit server is notified with the result of the update (failure or success) : the details (exit code, name, etc) about 
+                which app failed to start is given.
 
         :param dictionnary base: Dictionnary storing information about a Hawkbit update.
         """
