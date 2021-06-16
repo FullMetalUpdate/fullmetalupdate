@@ -145,7 +145,6 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         action_id, resource = match.groups()
         # fetch deployment information
         deploy_info = await self.ddi.deploymentBase[action_id](resource)
-        reboot_needed = False
 
         chunks_qty = len(deploy_info['deployment']['chunks'])
 
@@ -164,9 +163,17 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
             await self.ddi.deploymentBase[action_id].feedback(
                 status_execution, status_result, [msg],
                 percentage=percentage)
+        
+        # Algorithm to sort chunks : OS chunk first and then Apps chunk
+        count = 0
+        for count in range(chunks_qty):
+            if deploy_info['deployment']['chunks'][count]['part'] == 'os':
+                deploy_info['deployment']['chunks'].insert(0, deploy_info['deployment']['chunks'][count])
+                del deploy_info['deployment']['chunks'][count + 1]
+                break
 
         self.action_id = action_id
-
+        final_result_os = True
         seq = ('name', 'version', 'rev', 'part', 'autostart', 'autoremove', 'status_execution', 'status_update', 'status_result', 'notify', 'timeout')
         updates = []
 
@@ -196,33 +203,40 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 # checking if we just rebooted and we need to send the feedback in which
                 # case we don't need to pull the update image again
                 [feedback, reboot_data] = self.feedback_for_os_deployment(update['rev'])
-                if feedback:
-                    await self.ddi.deploymentBase[reboot_data['action_id']].feedback(
-                        DeploymentStatusExecution(reboot_data['status_execution']),
-                        DeploymentStatusResult(reboot_data['status_result']),
-                        [reboot_data['msg']])
-                    self.action_id = None
-                    return
+                if feedback: 
+                    final_result_os = (DeploymentStatusResult(reboot_data['status_result']) == DeploymentStatusResult.success)
+                    if not final_result_os:
+                        self.logger.info(reboot_data['msg'])
+                        await self.ddi.deploymentBase[reboot_data['action_id']].feedback(
+                            DeploymentStatusExecution(reboot_data['status_execution']),
+                            DeploymentStatusResult(reboot_data['status_result']),
+                            [reboot_data['msg']])
+                        action_id = None
+                        return
 
-                self.logger.info("OS {} v.{} - updating...".format(update['name'], update['version']))
-                update['status_update'] = self.update_system(update['rev'])
-                update['status_execution'] = DeploymentStatusExecution.closed
-                if not update['status_update']:
-                    msg = "OS {} v.{} Deployment failed".format(update['name'], update['version'])
-                    self.logger.error(msg)
-                    update['status_result'] = DeploymentStatusResult.failure
-                    await self.ddi.deploymentBase[self.action_id].feedback(
-                        update['status_execution'], update['status_result'], [msg])
-                    return
                 else:
-                    msg = "OS {} v.{} Deployment succeed".format(update['name'], update['version'])
-                    self.logger.info(msg)
-                    update['status_result'] = DeploymentStatusResult.success
-                    reboot_needed = True
-                    self.write_reboot_data(self.action_id,
-                                           update['status_execution'],
-                                           update['status_result'],
-                                           msg)
+                    self.logger.info("OS {} v.{} - updating...".format(update['name'], update['version']))
+                    update['status_update'] = self.update_system(update['rev'])
+                    update['status_execution'] = DeploymentStatusExecution.closed
+                    if not update['status_update']:
+                        msg = "OS {} v.{} Deployment failed".format(update['name'], update['version'])
+                        self.logger.error(msg)
+                        update['status_result'] = DeploymentStatusResult.failure
+                        await self.ddi.deploymentBase[self.action_id].feedback(
+                            update['status_execution'], update['status_result'], [msg])
+                        return
+                    else:
+                        msg = "OS {} v.{} Deployment succeed".format(update['name'], update['version'])
+                        self.logger.info(msg)
+                        update['status_result'] = DeploymentStatusResult.success
+                        self.write_reboot_data(self.action_id,
+                                            update['status_execution'],
+                                            update['status_result'],
+                                            msg)
+                        try:
+                            subprocess.run("reboot")
+                        except subprocess.CalledProcessError as e:
+                            self.logger.error("Reboot failed: {}".format(e))
 
             elif update['part'] == 'bApp':
                 self.logger.info("App {} v.{} - updating...".format(update['name'], update['version']))
@@ -241,8 +255,10 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
         for update in updates:
             update['status_update'] &= self.handle_container(update['name'], update['autostart'], update['autoremove'])
 
-        final_result = True
+        final_result_apps = True
         fails = ""
+        feedbackMsg = ""
+        notifyMsg = ""
         feedbackThreadIt = iter(self.feedbackThreads)
 
         # Hawkbit server feedback process
@@ -255,33 +271,34 @@ class FullMetalUpdateDDIClient(AsyncUpdater):
                 self.mutexResults.release()
 
             if not update['status_update']:
-               msg = "App {} v.{} Deployment failed\n {}".format(update['name'], update['version'], feedbackMsg)
-               self.logger.error(msg)
-               update['status_result'] = DeploymentStatusResult.failure
-               fails += update['name'] + " "
+                msg = "App {} v.{} Deployment failed : {}\n".format(update['name'], update['version'], feedbackMsg)
+                notifyMsg += msg
+                self.logger.error(msg)
+                update['status_result'] = DeploymentStatusResult.failure
+                fails += update['name'] + " "
             else:
-               msg = "App {} v.{} Deployment succeed".format(update['name'], update['version'])
-               self.logger.info(msg)
-               update['status_result'] = DeploymentStatusResult.success
+                msg = "App {} v.{} Deployment succeed\n".format(update['name'], update['version'])
+                notifyMsg += msg
+                self.logger.info(msg)
+                update['status_result'] = DeploymentStatusResult.success
 
-            final_result &= (update['status_result'] == DeploymentStatusResult.success)
-        
-        if(final_result):
-            msg = "Hawkbit Update Success : All applications have been updated and correctly restarted."
-            self.logger.info(msg)
-            status_result = DeploymentStatusResult.success
-        else:
-            msg = "Hawkbit Update Failure : " + fails + "failed to update and / or to restart."
-            self.logger.error(msg)
-            status_result = DeploymentStatusResult.failure
-        await self.ddi.deploymentBase[self.action_id].feedback(DeploymentStatusExecution.closed, status_result, [msg])
+            final_result_apps &= (update['status_result'] == DeploymentStatusResult.success)
 
+        if updates:
+            if(final_result_apps):
+                msg = "Hawkbit Update Success : All applications have been updated and correctly restarted."
+                self.logger.info(msg)
+                status_result = DeploymentStatusResult.success
+            else:
+                msg = "Hawkbit Update Failure : " + fails + "failed to update and / or to restart."
+                self.logger.error(msg)
+                status_result = DeploymentStatusResult.failure
+            notifyMsg = msg + "\n" + notifyMsg
+        if feedback:
+            notifyMsg += reboot_data['msg']
+            
+        await self.ddi.deploymentBase[self.action_id].feedback(DeploymentStatusExecution.closed, status_result, [notifyMsg])
         self.action_id = None
-        if reboot_needed:
-            try:
-                subprocess.run("reboot")
-            except subprocess.CalledProcessError as e:
-                self.logger.error("Reboot failed: {}".format(e))
 
     async def sleep(self, base):
         """ 
