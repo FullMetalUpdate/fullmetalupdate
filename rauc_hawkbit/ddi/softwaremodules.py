@@ -15,7 +15,7 @@ class FileName(object):
         See http://sp.apps.bosch-iot-cloud.com/documentation/rest-api/rootcontroller-api-guide.html#_get_tenant_controller_v1_targetid_softwaremodules_softwaremoduleid_artifacts_filename # noqa
         """
         return await self.ddi.get_binary_resource(
-            '/{tenant}/controller/v1/{controllerId}/softwaremodules/{moduleId}/artifacts/{filename}', bundle_dl_location, moduleId=self.software_module_id,
+            '{tenant}/controller/v1/{controllerId}/softwaremodules/{moduleId}/artifacts/{filename}', bundle_dl_location, moduleId=self.software_module_id,
             filename=self.file_name)
 
     async def MD5SUM(self, md5_dl_location):
@@ -23,7 +23,7 @@ class FileName(object):
         See http://sp.apps.bosch-iot-cloud.com/documentation/rest-api/rootcontroller-api-guide.html#_get_tenant_controller_v1_targetid_softwaremodules_softwaremoduleid_artifacts_filename_md5sum # noqa
         """
         return await self.ddi.get_binary_resource(
-            '/{tenant}/controller/v1/{controllerId}/softwaremodules/{moduleId}/artifacts/{filename}', md5_dl_location, mime='text/plain', moduleId=self.software_module_id,
+            '{tenant}/controller/v1/{controllerId}/softwaremodules/{moduleId}/artifacts/{filename}', md5_dl_location, mime='text/plain', moduleId=self.software_module_id,
             filename=self.file_name)
 
 
@@ -41,7 +41,7 @@ class Artifacts(object):
         See http://sp.apps.bosch-iot-cloud.com/documentation/rest-api/rootcontroller-api-guide.html#_get_tenant_controller_v1_targetid_softwaremodules_softwaremoduleid_artifacts # noqa
         """
         return await self.ddi.get_resource(
-            '/{tenant}/controller/v1/{controllerId}/softwaremodules/{moduleId}/artifacts', moduleId=self.software_module_id)
+            '{tenant}/controller/v1/{controllerId}/softwaremodules/{moduleId}/artifacts', moduleId=self.software_module_id)
 
     def __getitem__(self, key):
         filename = key
